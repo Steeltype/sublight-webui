@@ -25,6 +25,7 @@
 
 html, body {
   height: 100%;
+  overflow: hidden;
   font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
   font-size: 14px;
   color: var(--text);
@@ -102,6 +103,7 @@ html, body {
   display: flex;
   height: 100%;
   width: 100%;
+  overflow: hidden;
 }
 
 /* ─── Sidebar ─────────────────────────────────────────────────── */
@@ -196,6 +198,7 @@ html, body {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
 }
 
 #empty-state {
