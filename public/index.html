@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sublight</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css" integrity="sha384-wH75j6z1lH97ZOpMOInqhgKzFkAInZPPSPlZpYKYTOqsaizPvhQZmAtLcPKXpLyH" crossorigin="anonymous">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js" integrity="sha384-RH2xi4eIQ/gjtbs9fUXM68sLSi99C7ZWBRX1vDrVv6GQXRibxXLbwO2NGZB74MbU" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js" integrity="sha384-948ahk4ZmxYVYOc+rxN1H2gM1EJ2Duhp7uHtZ4WSLkV4Vtx5MUqnV+l7u9B+jFv+" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.3.3/dist/purify.min.js" integrity="sha384-pcBjnGbkyKeOXaoFkmJiuR9E08/6gkmus6/Strimnxtl3uk0Hx23v345pWyC/MMr" crossorigin="anonymous"></script>
+</head>
+<body>
+  <!-- ─── Auth screen ───────────────────────────────────────────── -->
+  <div id="auth-screen" class="hidden">
+    <form id="auth-form">
+      <h1>Sublight</h1>
+      <p>This instance requires a token to connect.</p>
+      <input type="password" id="auth-token" placeholder="Enter token" autocomplete="off">
+      <button type="submit">Connect</button>
+      <div id="auth-error"></div>
+    </form>
+  </div>
+
+  <!-- ─── App shell ─────────────────────────────────────────────── -->
+  <div id="app-shell">
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <h1>Sublight</h1>
+        <button id="btn-new-session" title="New session">+</button>
+      </div>
+      <ul id="session-list"></ul>
+    </aside>
+
+    <main id="main">
+      <div id="empty-state">
+        <p>Create a new session to get started.</p>
+        <button id="btn-new-session-empty">New Session</button>
+      </div>
+
+      <div id="chat-area" class="hidden">
+        <div id="chat-header">
+          <span id="chat-title"></span>
+          <span id="chat-status"></span>
+          <div id="chat-actions">
+            <button id="btn-save" title="Save session">Save</button>
+            <button id="btn-notes" title="Toggle notes">Notes</button>
+          </div>
+        </div>
+        <div id="chat-body">
+          <div id="messages"></div>
+          <div id="notes-panel" class="hidden">
+            <div id="notes-header">
+              <span>Session Notes</span>
+              <button id="btn-add-note" title="Add note">+</button>
+            </div>
+            <div id="notes-list"></div>
+          </div>
+        </div>
+        <form id="input-bar">
+          <textarea id="prompt-input" placeholder="Write your message... (Ctrl+Enter to send)" rows="3"></textarea>
+          <div id="input-actions">
+            <button type="submit" id="btn-send" title="Send (Ctrl+Enter)">Send</button>
+            <button type="button" id="btn-abort" class="hidden" title="Stop">Stop</button>
+          </div>
+        </form>
+      </div>
+    </main>
+  </div>
+
+  <!-- ─── New Session dialog ────────────────────────────────────── -->
+  <dialog id="new-session-dialog">
+    <form method="dialog" id="new-session-form">
+      <h2>New Session</h2>
+      <label for="session-cwd">Working directory</label>
+      <input type="text" id="session-cwd" autocomplete="off" spellcheck="false">
+      <div class="dialog-actions">
+        <button type="button" id="dialog-cancel">Cancel</button>
+        <button type="submit" id="dialog-create">Create</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ─── Confirm dialog (reusable) ─────────────────────────────── -->
+  <dialog id="confirm-dialog">
+    <div id="confirm-body">
+      <p id="confirm-message"></p>
+      <div class="dialog-actions">
+        <button type="button" id="confirm-cancel">Cancel</button>
+        <button type="button" id="confirm-ok">Confirm</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
