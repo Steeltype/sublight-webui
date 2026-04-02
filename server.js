@@ -339,18 +339,33 @@ function ensureProcess(session, ws) {
   });
 }
 
-function sendMessage(session, text, ws) {
+function sendMessage(session, text, ws, attachments) {
   ensureProcess(session, ws);
 
   session.status = 'busy';
-  logToSession(session, { type: 'user_message', text });
+  logToSession(session, { type: 'user_message', text, hasAttachments: !!attachments?.length });
 
   sendJSON(ws, { type: 'stream_start', sessionId: session.localId });
 
-  // Write user message to Claude's stdin as NDJSON
+  // Build content array — text + any image/file attachments
+  let content;
+  if (attachments?.length) {
+    content = [];
+    for (const att of attachments) {
+      if (att.type === 'image' && att.source) {
+        content.push(att); // Already in Anthropic API format
+      } else if (att.type === 'text') {
+        content.push(att);
+      }
+    }
+    content.push({ type: 'text', text });
+  } else {
+    content = text;
+  }
+
   const userMessage = {
     type: 'user',
-    message: { role: 'user', content: text },
+    message: { role: 'user', content },
     parent_tool_use_id: null,
   };
   session.proc.stdin.write(JSON.stringify(userMessage) + '\n');
@@ -418,7 +433,7 @@ wss.on('connection', (ws) => {
         }
         if (!msg.text?.trim()) return;
 
-        sendMessage(session, msg.text, ws);
+        sendMessage(session, msg.text, ws, msg.attachments);
         break;
       }
 

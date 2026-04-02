@@ -65,11 +65,16 @@
           </div>
         </div>
         <form id="input-bar">
-          <textarea id="prompt-input" placeholder="Write your message... (Ctrl+Enter to send)" rows="3"></textarea>
-          <div id="input-actions">
-            <button type="submit" id="btn-send" title="Send (Ctrl+Enter)">Send</button>
-            <button type="button" id="btn-abort" class="hidden" title="Stop">Stop</button>
+          <div id="attachments-bar" class="hidden"></div>
+          <div id="input-row">
+            <button type="button" id="btn-attach" title="Attach file or paste screenshot">+</button>
+            <textarea id="prompt-input" placeholder="Write your message... (Ctrl+Enter to send, paste/drop images)" rows="3"></textarea>
+            <div id="input-actions">
+              <button type="submit" id="btn-send" title="Send (Ctrl+Enter)">Send</button>
+              <button type="button" id="btn-abort" class="hidden" title="Stop">Stop</button>
+            </div>
           </div>
+          <input type="file" id="file-input" multiple accept="image/*,.txt,.md,.json,.csv,.log" class="hidden">
         </form>
       </div>
     </main>

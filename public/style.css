@@ -298,6 +298,25 @@ html, body {
   white-space: pre-wrap;
 }
 
+.msg-attachments {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.msg-attachment-img {
+  max-width: 200px;
+  max-height: 150px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+#messages.drag-over {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+}
+
 .msg-assistant {
   align-self: flex-start;
   background: var(--bg-card);
@@ -438,11 +457,91 @@ html, body {
 
 #input-bar {
   display: flex;
-  gap: 8px;
+  flex-direction: column;
+  gap: 6px;
   padding: 12px 20px;
   border-top: 1px solid var(--border);
   background: var(--bg-input);
+}
+
+#input-row {
+  display: flex;
+  gap: 8px;
   align-items: flex-end;
+}
+
+/* ─── Attachments bar ─────────────────────────────────────────── */
+
+#attachments-bar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 4px 0;
+}
+
+.attachment-thumb {
+  position: relative;
+  width: 60px;
+  height: 60px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  background: var(--bg-chat);
+}
+
+.attachment-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.attachment-thumb .file-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 9px;
+  color: var(--text-dim);
+  text-align: center;
+  padding: 4px;
+  word-break: break-all;
+}
+
+.attachment-remove {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  background: var(--error);
+  border: none;
+  border-radius: 50%;
+  color: white;
+  width: 16px;
+  height: 16px;
+  font-size: 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+#btn-attach {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 18px;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+  font-family: inherit;
+}
+
+#btn-attach:hover {
+  background: var(--bg-hover);
+  color: var(--text);
 }
 
 #prompt-input {
@@ -741,6 +840,7 @@ dialog {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-height: 0;
 }
 
 #artifacts-header {
@@ -832,6 +932,25 @@ dialog {
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
+
+.artifact-export {
+  position: absolute;
+  bottom: 4px;
+  right: 6px;
+  background: rgba(0, 0, 0, 0.5);
+  border: none;
+  border-radius: 3px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 2px 6px;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+  font-family: inherit;
+}
+
+.artifact-card:hover .artifact-export { opacity: 1; }
+.artifact-export:hover { color: var(--text-bright); }
 
 /* ─── Diff rendering ──────────────────────────────────────────── */
 

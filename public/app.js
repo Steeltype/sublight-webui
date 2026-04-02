@@ -511,12 +511,27 @@ function extractToolResultText(block) {
 // Render helpers
 // ---------------------------------------------------------------------------
 
-function appendUserMessage(session, text) {
-  session.messages.push({ role: 'user', text });
+function appendUserMessage(session, text, attachments) {
+  session.messages.push({ role: 'user', text, attachments: attachments || null });
   if (session.id === state.activeId) {
     const el = document.createElement('div');
     el.className = 'msg msg-user';
-    el.textContent = text;
+    if (attachments?.length) {
+      const thumbs = document.createElement('div');
+      thumbs.className = 'msg-attachments';
+      for (const att of attachments) {
+        if (att.type === 'image') {
+          const img = document.createElement('img');
+          img.src = `data:${att.source.media_type};base64,${att.source.data}`;
+          img.className = 'msg-attachment-img';
+          thumbs.appendChild(img);
+        }
+      }
+      if (thumbs.childElementCount) el.appendChild(thumbs);
+    }
+    const textNode = document.createElement('div');
+    textNode.textContent = text;
+    el.appendChild(textNode);
     $messages.appendChild(el);
     scrollToBottom();
   }
@@ -746,8 +761,9 @@ $inputBar.addEventListener('submit', (e) => {
   const session = state.sessions.get(state.activeId);
   if (!session || session.status === 'busy') return;
 
-  appendUserMessage(session, text);
-  send({ type: 'message', sessionId: state.activeId, text });
+  const attachments = consumeAttachments();
+  appendUserMessage(session, text, attachments);
+  send({ type: 'message', sessionId: state.activeId, text, attachments });
   $promptInput.value = '';
   autoResizeInput();
 });
@@ -1024,7 +1040,55 @@ function renderArtifactCard(artifact) {
     return null;
   }
 
+  // Export button on every card
+  const exportBtn = document.createElement('button');
+  exportBtn.className = 'artifact-export';
+  exportBtn.textContent = 'Save';
+  exportBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    exportArtifact(artifact);
+  });
+  card.appendChild(exportBtn);
+
   return card;
+}
+
+function exportArtifact(artifact) {
+  let blob, filename;
+
+  if (artifact.type === 'image') {
+    // Download image via fetch
+    fetch(`/local-file?path=${encodeURIComponent(artifact.path)}`)
+      .then(r => r.blob())
+      .then(b => {
+        const ext = artifact.path.split('.').pop() || 'png';
+        downloadBlob(b, `artifact.${ext}`);
+      });
+    return;
+  } else if (artifact.type === 'code') {
+    const ext = artifact.language ? { javascript: 'js', python: 'py', typescript: 'ts', html: 'html', css: 'css', json: 'json' }[artifact.language] || 'txt' : 'txt';
+    blob = new Blob([artifact.content], { type: 'text/plain' });
+    filename = `${artifact.title || 'artifact'}.${ext}`;
+  } else if (artifact.type === 'diff') {
+    blob = new Blob([artifact.diff], { type: 'text/plain' });
+    filename = `${artifact.title || 'artifact'}.diff`;
+  } else if (artifact.type === 'markdown') {
+    blob = new Blob([artifact.markdown], { type: 'text/markdown' });
+    filename = `${artifact.title || 'artifact'}.md`;
+  } else {
+    return;
+  }
+
+  downloadBlob(blob, filename);
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 // Progress bars — stored separately (upserted by id, not appended)
@@ -1274,6 +1338,133 @@ document.getElementById('dialog-cancel').addEventListener('click', () => {
 
 document.getElementById('btn-new-session').addEventListener('click', openNewSessionDialog);
 document.getElementById('btn-new-session-empty').addEventListener('click', openNewSessionDialog);
+
+// ---------------------------------------------------------------------------
+// File attachments — upload, paste, drag-and-drop
+// ---------------------------------------------------------------------------
+
+const $attachBar = document.getElementById('attachments-bar');
+const $fileInput = document.getElementById('file-input');
+const $btnAttach = document.getElementById('btn-attach');
+
+/** Array of { file: File, dataUrl: string, base64: string, mediaType: string } */
+const pendingAttachments = [];
+
+$btnAttach.addEventListener('click', () => $fileInput.click());
+
+$fileInput.addEventListener('change', () => {
+  for (const file of $fileInput.files) {
+    addAttachment(file);
+  }
+  $fileInput.value = '';
+});
+
+// Paste handler (screenshots from clipboard)
+$promptInput.addEventListener('paste', (e) => {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  for (const item of items) {
+    if (item.type.startsWith('image/')) {
+      e.preventDefault();
+      const file = item.getAsFile();
+      if (file) addAttachment(file);
+    }
+  }
+});
+
+// Drag and drop on messages area
+$messages.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  $messages.classList.add('drag-over');
+});
+
+$messages.addEventListener('dragleave', () => {
+  $messages.classList.remove('drag-over');
+});
+
+$messages.addEventListener('drop', (e) => {
+  e.preventDefault();
+  $messages.classList.remove('drag-over');
+  for (const file of e.dataTransfer.files) {
+    addAttachment(file);
+  }
+});
+
+function addAttachment(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    const dataUrl = reader.result;
+    // Extract base64 and media type
+    const match = dataUrl.match(/^data:(.+?);base64,(.+)$/);
+    if (!match) return;
+    const [, mediaType, base64] = match;
+
+    const attachment = { file, dataUrl, base64, mediaType };
+    pendingAttachments.push(attachment);
+    renderAttachments();
+  };
+  reader.readAsDataURL(file);
+}
+
+function removeAttachment(index) {
+  pendingAttachments.splice(index, 1);
+  renderAttachments();
+}
+
+function renderAttachments() {
+  $attachBar.replaceChildren();
+  if (pendingAttachments.length === 0) {
+    $attachBar.classList.add('hidden');
+    return;
+  }
+  $attachBar.classList.remove('hidden');
+
+  pendingAttachments.forEach((att, i) => {
+    const thumb = document.createElement('div');
+    thumb.className = 'attachment-thumb';
+
+    if (att.mediaType.startsWith('image/')) {
+      const img = document.createElement('img');
+      img.src = att.dataUrl;
+      thumb.appendChild(img);
+    } else {
+      const label = document.createElement('div');
+      label.className = 'file-label';
+      label.textContent = att.file.name;
+      thumb.appendChild(label);
+    }
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'attachment-remove';
+    removeBtn.textContent = '\u00d7';
+    removeBtn.addEventListener('click', () => removeAttachment(i));
+    thumb.appendChild(removeBtn);
+
+    $attachBar.appendChild(thumb);
+  });
+}
+
+function consumeAttachments() {
+  if (pendingAttachments.length === 0) return null;
+  const content = pendingAttachments.map(att => {
+    if (att.mediaType.startsWith('image/')) {
+      return {
+        type: 'image',
+        source: { type: 'base64', media_type: att.mediaType, data: att.base64 },
+      };
+    }
+    // For text files, decode and include as text
+    try {
+      const text = atob(att.base64);
+      return { type: 'text', text: `[File: ${att.file.name}]\n${text}` };
+    } catch {
+      return { type: 'text', text: `[File: ${att.file.name}] (binary, ${att.file.size} bytes)` };
+    }
+  });
+  pendingAttachments.length = 0;
+  renderAttachments();
+  return content;
+}
 
 // ---------------------------------------------------------------------------
 // Boot
