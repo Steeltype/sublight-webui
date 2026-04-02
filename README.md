@@ -2,10 +2,15 @@
 
 A lightweight web interface for Claude CLI that wraps persistent Claude Code sessions with a multi-session chat UI, artifact panel, and custom MCP tools.
 
+![Sublight WebUI — artifact panel with markdown, diff, and tool cards](assets/screenshot.jpeg)
+
+![Image generation via SwarmUI displayed in artifact panel](assets/screenshot-image-gen.jpeg)
+
 ## Quick Start
 
 ```bash
 npm install
+cp .env.example .env      # edit with your token
 npm start
 ```
 
@@ -76,14 +81,39 @@ Artifacts are individually exportable (hover to reveal Save button).
 - Multiple note cards per session, auto-saved to localStorage
 - Not sent to Claude — private working memory for the user
 
-### Security
-- Token-based auth via `.env` (WebSocket upgrade validation)
-- Helmet.js security headers with CSP
-- DOMPurify sanitization on all rendered HTML
-- SRI integrity hashes on all CDN resources
-- Per-connection session ownership (no UUID guessing)
-- Graceful shutdown with child process cleanup
-- Confirmation dialogs for destructive actions
+## Security Warnings
+
+**This is a local development tool, not a production web application.** Understand these limitations before running it:
+
+- **`--dangerously-skip-permissions` is enabled by default.** Every Claude session runs with full tool access (file read/write, shell execution, MCP tools) without interactive permission prompts. This is necessary for the headless streaming mode but means Claude can execute any command in the session's working directory. Only point sessions at directories you trust.
+
+- **`/local-file` serves images from any filesystem path.** The endpoint is restricted to image file extensions (.png, .jpg, etc.) and requires auth, but there is no directory allowlist. Any authenticated user can request any image file on the server's filesystem.
+
+- **`/browse_dir` lists directories on the server.** The folder picker's autocomplete can enumerate directories anywhere on the filesystem. Auth-gated but not path-restricted.
+
+- **Single shared token for auth.** Authentication is a single bearer token in `.env`, not a multi-user system. Anyone with the token has full access to all sessions.
+
+- **Sessions are in-memory.** If the server restarts, all active sessions and their conversation history are lost. Session logs persist in `logs/` but cannot be resumed.
+
+- **No TLS.** The server runs plain HTTP/WS. If you expose it beyond localhost, use a reverse proxy with TLS (nginx, Caddy, etc.).
+
+- **`open_url` requires user confirmation** but the other 8 MCP tools execute without prompting. Claude can push arbitrary images, code, and markdown to the artifact panel automatically.
+
+### Recommended Deployment
+
+For local-only use (single machine):
+```bash
+HOST=127.0.0.1
+SUBLIGHT_TOKEN=  # optional when localhost-only
+```
+
+For LAN access (trusted network):
+```bash
+HOST=0.0.0.0
+SUBLIGHT_TOKEN=a-strong-random-token
+```
+
+Do not expose to the public internet without a reverse proxy, TLS, and additional access controls.
 
 ## Requirements
 
@@ -107,6 +137,7 @@ sublight-webui/
 │   ├── index.html      # SPA shell
 │   ├── app.js          # Frontend logic (sessions, streaming, artifacts, attachments)
 │   └── style.css       # Dark theme
+├── assets/             # Screenshots for README
 ├── logs/               # Per-session NDJSON logs (gitignored)
 ├── .env.example        # Configuration reference
 └── package.json
