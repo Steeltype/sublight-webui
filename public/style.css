@@ -489,6 +489,16 @@ html, body {
 #btn-abort { background: #7f1d1d; }
 #btn-abort:hover { background: #991b1b; }
 
+/* ─── Dialogs (shared centering) ──────────────────────────────── */
+
+dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+}
+
 /* ─── New Session dialog ──────────────────────────────────────── */
 
 #new-session-dialog {
