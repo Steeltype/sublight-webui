@@ -817,6 +817,116 @@ dialog {
   font-size: 12px;
 }
 
+.artifact-card.pinned {
+  border-color: var(--accent);
+  position: relative;
+}
+
+.artifact-card.pinned::before {
+  content: 'pinned';
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font-size: 9px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ─── Diff rendering ──────────────────────────────────────────── */
+
+.diff-content {
+  margin: 0;
+  padding: 10px;
+  font-size: 12px;
+  overflow-x: auto;
+  max-height: 400px;
+  overflow-y: auto;
+  line-height: 1.4;
+}
+
+.diff-add { color: #4ade80; }
+.diff-remove { color: #f87171; }
+.diff-hunk { color: #a78bfa; }
+
+/* ─── Markdown artifact ───────────────────────────────────────── */
+
+.artifact-markdown {
+  padding: 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.artifact-markdown h1,
+.artifact-markdown h2,
+.artifact-markdown h3 {
+  color: var(--text-bright);
+  margin: 0.8em 0 0.4em;
+}
+
+.artifact-markdown h1 { font-size: 16px; }
+.artifact-markdown h2 { font-size: 14px; }
+.artifact-markdown h3 { font-size: 13px; }
+
+.artifact-markdown p { margin-bottom: 0.5em; }
+.artifact-markdown code {
+  background: #27272a;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+.artifact-markdown pre {
+  background: #111114;
+  border-radius: 4px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  margin: 6px 0;
+}
+.artifact-markdown pre code { background: none; padding: 0; }
+
+/* ─── Progress bars ───────────────────────────────────────────── */
+
+.artifact-progress {
+  background: var(--bg-chat);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.artifact-progress.done {
+  opacity: 0.5;
+}
+
+.progress-label {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.progress-track {
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.progress-pct {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-align: right;
+}
+
 /* ─── Toast notifications ─────────────────────────────────────── */
 
 .toast {

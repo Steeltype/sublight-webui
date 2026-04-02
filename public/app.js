@@ -270,17 +270,49 @@ function handleServerMessage(msg) {
 
     case 'artifact': {
       const { sessionId, artifact } = msg;
+
+      // Handle notification as toast (don't add to artifact list)
+      if (artifact.type === 'notification') {
+        showToast(artifact.message);
+        break;
+      }
+
+      // Handle open_url with user confirmation
+      if (artifact.type === 'open_url') {
+        handleOpenUrl(artifact);
+        break;
+      }
+
+      // Handle set_session_name
+      if (artifact.type === 'set_session_name') {
+        const session = state.sessions.get(sessionId);
+        if (session) {
+          session.name = artifact.name;
+          if (sessionId === state.activeId) $chatTitle.textContent = artifact.name;
+          renderSidebar();
+        }
+        break;
+      }
+
+      // Handle progress updates (upsert by id)
+      if (artifact.type === 'progress') {
+        handleProgress(sessionId, artifact);
+        break;
+      }
+
+      // Handle pin
+      if (artifact.type === 'pin') {
+        handlePin(sessionId, artifact.index);
+        break;
+      }
+
+      // All other artifacts go into the list
       if (!state.artifacts.has(sessionId)) {
         state.artifacts.set(sessionId, []);
       }
       state.artifacts.get(sessionId).push(artifact);
 
-      // Handle notifications as toast
-      if (artifact.type === 'notification') {
-        showToast(artifact.message);
-      }
-
-      // Auto-open artifacts panel on first artifact
+      // Auto-open artifacts panel
       if (!state.artifactsVisible) {
         state.artifactsVisible = true;
         $artifactsPanel.classList.remove('hidden');
@@ -886,51 +918,166 @@ function renderArtifacts() {
   const artifacts = state.artifacts.get(state.activeId) || [];
   $artifactsList.replaceChildren();
 
-  if (artifacts.length === 0) {
+  if (artifacts.length === 0 && !getProgressBars(state.activeId).size) {
     const empty = document.createElement('p');
     empty.className = 'artifacts-empty';
-    empty.textContent = 'No artifacts yet. Claude can use show_image and show_artifact tools to display content here.';
+    empty.textContent = 'No artifacts yet. Claude can use show_image, show_artifact, show_diff, and other tools to display content here.';
     $artifactsList.appendChild(empty);
     return;
   }
 
-  for (const artifact of artifacts) {
-    const card = document.createElement('div');
-    card.className = 'artifact-card';
-
-    if (artifact.type === 'image') {
-      const img = document.createElement('img');
-      img.src = `/local-file?path=${encodeURIComponent(artifact.path)}`;
-      img.alt = artifact.caption || 'Image artifact';
-      img.loading = 'lazy';
-      card.appendChild(img);
-      if (artifact.caption) {
-        const cap = document.createElement('div');
-        cap.className = 'artifact-caption';
-        cap.textContent = artifact.caption;
-        card.appendChild(cap);
-      }
-    } else if (artifact.type === 'code') {
-      const title = document.createElement('div');
-      title.className = 'artifact-title';
-      title.textContent = artifact.title;
-      card.appendChild(title);
-      const pre = document.createElement('pre');
-      const code = document.createElement('code');
-      code.textContent = artifact.content;
-      if (artifact.language) {
-        code.className = `language-${artifact.language}`;
-        hljs.highlightElement(code);
-      }
-      pre.appendChild(code);
-      card.appendChild(pre);
-    }
-
-    $artifactsList.appendChild(card);
+  // Render progress bars at top
+  for (const [id, prog] of getProgressBars(state.activeId)) {
+    const bar = document.createElement('div');
+    bar.className = 'artifact-progress' + (prog.done ? ' done' : '');
+    const label = document.createElement('div');
+    label.className = 'progress-label';
+    label.textContent = prog.label;
+    bar.appendChild(label);
+    const track = document.createElement('div');
+    track.className = 'progress-track';
+    const fill = document.createElement('div');
+    fill.className = 'progress-fill';
+    fill.style.width = `${prog.percent}%`;
+    track.appendChild(fill);
+    bar.appendChild(track);
+    const pct = document.createElement('div');
+    pct.className = 'progress-pct';
+    pct.textContent = prog.done ? 'Done' : `${prog.percent}%`;
+    bar.appendChild(pct);
+    $artifactsList.appendChild(bar);
   }
 
-  // Scroll to latest
+  // Render pinned artifacts first
+  const pinned = artifacts.filter(a => a.pinned);
+  const unpinned = artifacts.filter(a => !a.pinned);
+
+  for (const artifact of [...pinned, ...unpinned]) {
+    const card = renderArtifactCard(artifact);
+    if (card) $artifactsList.appendChild(card);
+  }
+
   $artifactsList.scrollTop = $artifactsList.scrollHeight;
+}
+
+function renderArtifactCard(artifact) {
+  const card = document.createElement('div');
+  card.className = 'artifact-card' + (artifact.pinned ? ' pinned' : '');
+
+  if (artifact.type === 'image') {
+    const img = document.createElement('img');
+    img.src = `/local-file?path=${encodeURIComponent(artifact.path)}`;
+    img.alt = artifact.caption || 'Image artifact';
+    img.loading = 'lazy';
+    card.appendChild(img);
+    if (artifact.caption) {
+      const cap = document.createElement('div');
+      cap.className = 'artifact-caption';
+      cap.textContent = artifact.caption;
+      card.appendChild(cap);
+    }
+  } else if (artifact.type === 'code') {
+    const title = document.createElement('div');
+    title.className = 'artifact-title';
+    title.textContent = artifact.title;
+    card.appendChild(title);
+    const pre = document.createElement('pre');
+    const code = document.createElement('code');
+    code.textContent = artifact.content;
+    if (artifact.language) {
+      code.className = `language-${artifact.language}`;
+      hljs.highlightElement(code);
+    }
+    pre.appendChild(code);
+    card.appendChild(pre);
+  } else if (artifact.type === 'diff') {
+    const title = document.createElement('div');
+    title.className = 'artifact-title';
+    title.textContent = artifact.title;
+    card.appendChild(title);
+    const pre = document.createElement('pre');
+    pre.className = 'diff-content';
+    // Color diff lines
+    for (const line of artifact.diff.split('\n')) {
+      const span = document.createElement('span');
+      span.textContent = line + '\n';
+      if (line.startsWith('+') && !line.startsWith('+++')) {
+        span.className = 'diff-add';
+      } else if (line.startsWith('-') && !line.startsWith('---')) {
+        span.className = 'diff-remove';
+      } else if (line.startsWith('@@')) {
+        span.className = 'diff-hunk';
+      }
+      pre.appendChild(span);
+    }
+    card.appendChild(pre);
+  } else if (artifact.type === 'markdown') {
+    const title = document.createElement('div');
+    title.className = 'artifact-title';
+    title.textContent = artifact.title;
+    card.appendChild(title);
+    const body = document.createElement('div');
+    body.className = 'artifact-markdown';
+    setMarkdownContent(body, artifact.markdown);
+    card.appendChild(body);
+  } else {
+    return null;
+  }
+
+  return card;
+}
+
+// Progress bars — stored separately (upserted by id, not appended)
+/** Map<sessionId, Map<progressId, {label, percent, done}>> */
+const progressBars = new Map();
+
+function getProgressBars(sessionId) {
+  return progressBars.get(sessionId) || new Map();
+}
+
+function handleProgress(sessionId, artifact) {
+  if (!progressBars.has(sessionId)) progressBars.set(sessionId, new Map());
+  const bars = progressBars.get(sessionId);
+
+  if (artifact.done) {
+    // Mark as done, remove after a short delay
+    bars.set(artifact.id, { ...artifact });
+    if (sessionId === state.activeId) renderArtifacts();
+    setTimeout(() => {
+      bars.delete(artifact.id);
+      if (sessionId === state.activeId) renderArtifacts();
+    }, 3000);
+  } else {
+    bars.set(artifact.id, artifact);
+    if (sessionId === state.activeId) renderArtifacts();
+  }
+
+  if (!state.artifactsVisible) {
+    state.artifactsVisible = true;
+    $artifactsPanel.classList.remove('hidden');
+  }
+}
+
+// Pin artifact
+function handlePin(sessionId, index) {
+  const artifacts = state.artifacts.get(sessionId);
+  if (!artifacts) return;
+
+  const idx = index < 0 ? artifacts.length + index : index;
+  if (idx >= 0 && idx < artifacts.length) {
+    artifacts[idx].pinned = true;
+    if (sessionId === state.activeId) renderArtifacts();
+  }
+}
+
+// Open URL with confirmation
+async function handleOpenUrl(artifact) {
+  const label = artifact.label || artifact.url;
+  const ok = await confirm(`Claude wants to open a URL:\n\n${label}\n\n${artifact.url}`);
+  send({ type: 'url_response', requestId: artifact.requestId, opened: ok });
+  if (ok) {
+    window.open(artifact.url, '_blank', 'noopener,noreferrer');
+  }
 }
 
 document.getElementById('btn-artifacts').addEventListener('click', () => {

@@ -85,6 +85,41 @@ app.post('/artifact', (req, res) => {
     return res.status(404).json({ error: 'Unknown session' });
   }
 
+  // Handle set_session_name server-side (updates session state)
+  if (artifact.type === 'set_session_name' && artifact.name) {
+    session.name = artifact.name;
+  }
+
+  // For open_url, we forward to browser and wait for the user's response
+  // via a pending promise. The browser sends back { opened: true/false }.
+  if (artifact.type === 'open_url') {
+    const requestId = crypto.randomUUID();
+    artifact.requestId = requestId;
+
+    // Store a resolver so the browser can respond
+    const timeout = setTimeout(() => {
+      pendingUrlRequests.delete(requestId);
+      res.json({ declined: true });
+    }, 60000);
+
+    pendingUrlRequests.set(requestId, { resolve: (opened) => {
+      clearTimeout(timeout);
+      pendingUrlRequests.delete(requestId);
+      res.json({ opened, declined: !opened });
+    }});
+
+    // Forward to browser (don't respond yet — wait for user decision)
+    const event = { type: 'artifact', sessionId, artifact };
+    for (const ws of wss.clients) {
+      const connSessions = connectionSessions.get(ws);
+      if (connSessions?.has(sessionId)) {
+        sendJSON(ws, event);
+      }
+    }
+    logToSession(session, { type: 'artifact', artifact });
+    return;
+  }
+
   // Forward artifact to all WebSocket clients that own this session
   const event = { type: 'artifact', sessionId, artifact };
   for (const ws of wss.clients) {
@@ -97,6 +132,9 @@ app.post('/artifact', (req, res) => {
   logToSession(session, { type: 'artifact', artifact });
   res.json({ ok: true });
 });
+
+/** Pending open_url requests awaiting user confirmation */
+const pendingUrlRequests = new Map();
 
 const httpServer = createServer(app);
 
@@ -420,6 +458,15 @@ wss.on('connection', (ws) => {
 
       case 'get_defaults': {
         sendJSON(ws, { type: 'defaults', cwd: process.cwd() });
+        break;
+      }
+
+      // ---- User response to open_url confirmation ----
+      case 'url_response': {
+        const pending = pendingUrlRequests.get(msg.requestId);
+        if (pending) {
+          pending.resolve(msg.opened);
+        }
         break;
       }
 
