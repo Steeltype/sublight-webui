@@ -848,14 +848,157 @@ document.getElementById('btn-notes').addEventListener('click', () => {
 });
 
 // ---------------------------------------------------------------------------
-// New Session dialog
+// New Session dialog with folder autocomplete
 // ---------------------------------------------------------------------------
 
-const $dialog    = document.getElementById('new-session-dialog');
-const $dialogCwd = document.getElementById('session-cwd');
+const $dialog       = document.getElementById('new-session-dialog');
+const $dialogCwd    = document.getElementById('session-cwd');
+const $cwdSuggest   = document.getElementById('cwd-suggestions');
+const RECENT_KEY    = 'sublight_recent_dirs';
+const MAX_RECENTS   = 10;
+
+function getRecentDirs() {
+  try { return JSON.parse(localStorage.getItem(RECENT_KEY)) || []; }
+  catch { return []; }
+}
+
+function addRecentDir(dir) {
+  let recents = getRecentDirs().filter(d => d !== dir);
+  recents.unshift(dir);
+  if (recents.length > MAX_RECENTS) recents.length = MAX_RECENTS;
+  localStorage.setItem(RECENT_KEY, JSON.stringify(recents));
+}
+
+function getSessionDirs() {
+  const dirs = new Set();
+  for (const s of state.sessions.values()) {
+    if (s.cwd) dirs.add(s.cwd);
+  }
+  return [...dirs];
+}
+
+let cwdDebounce = null;
+let cwdHighlight = -1;
+
+function showSuggestions(items) {
+  $cwdSuggest.replaceChildren();
+  cwdHighlight = -1;
+  if (items.length === 0) {
+    $cwdSuggest.classList.add('hidden');
+    return;
+  }
+  for (const item of items) {
+    const li = document.createElement('li');
+    li.textContent = item.path;
+    if (item.tag) {
+      const tag = document.createElement('span');
+      tag.className = 'suggest-tag';
+      tag.textContent = item.tag;
+      li.appendChild(tag);
+    }
+    li.addEventListener('mousedown', (e) => {
+      e.preventDefault(); // prevent blur
+      $dialogCwd.value = item.path;
+      $cwdSuggest.classList.add('hidden');
+      // If selected a dir, trigger another browse to show children
+      requestBrowse(item.path + '/');
+    });
+    $cwdSuggest.appendChild(li);
+  }
+  $cwdSuggest.classList.remove('hidden');
+}
+
+function buildLocalSuggestions(input) {
+  const lower = input.toLowerCase();
+  const items = [];
+
+  // Open session dirs
+  for (const dir of getSessionDirs()) {
+    if (dir.toLowerCase().includes(lower)) {
+      items.push({ path: dir, tag: 'open' });
+    }
+  }
+
+  // Recent dirs (skip duplicates with open sessions)
+  const openSet = new Set(getSessionDirs());
+  for (const dir of getRecentDirs()) {
+    if (!openSet.has(dir) && dir.toLowerCase().includes(lower)) {
+      items.push({ path: dir, tag: 'recent' });
+    }
+  }
+
+  return items;
+}
+
+function requestBrowse(input) {
+  if (!input.trim()) {
+    showSuggestions(buildLocalSuggestions(''));
+    return;
+  }
+  // Show local matches immediately, then augment with filesystem results
+  send({ type: 'browse_dir', path: input });
+}
+
+// Handle dir_listing responses from server
+const originalHandler = handleServerMessage;
+handleServerMessage = function(msg) {
+  if (msg.type === 'dir_listing') {
+    const input = $dialogCwd.value;
+    const local = buildLocalSuggestions(input);
+    const localPaths = new Set(local.map(i => i.path));
+    const fs = (msg.entries || [])
+      .filter(p => !localPaths.has(p))
+      .map(p => ({ path: p, tag: null }));
+    showSuggestions([...local, ...fs].slice(0, 15));
+    return;
+  }
+  originalHandler(msg);
+};
+
+$dialogCwd.addEventListener('input', () => {
+  clearTimeout(cwdDebounce);
+  cwdDebounce = setTimeout(() => requestBrowse($dialogCwd.value), 150);
+});
+
+$dialogCwd.addEventListener('focus', () => {
+  if (!$dialogCwd.value.trim()) {
+    showSuggestions(buildLocalSuggestions(''));
+  }
+});
+
+$dialogCwd.addEventListener('blur', () => {
+  // Delay to allow mousedown on suggestions to fire
+  setTimeout(() => $cwdSuggest.classList.add('hidden'), 200);
+});
+
+$dialogCwd.addEventListener('keydown', (e) => {
+  const items = $cwdSuggest.querySelectorAll('li');
+  if (!items.length) return;
+
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    cwdHighlight = Math.min(cwdHighlight + 1, items.length - 1);
+    items.forEach((li, i) => li.classList.toggle('highlighted', i === cwdHighlight));
+    items[cwdHighlight]?.scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    cwdHighlight = Math.max(cwdHighlight - 1, 0);
+    items.forEach((li, i) => li.classList.toggle('highlighted', i === cwdHighlight));
+    items[cwdHighlight]?.scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'Tab' || (e.key === 'Enter' && cwdHighlight >= 0)) {
+    if (cwdHighlight >= 0 && items[cwdHighlight]) {
+      e.preventDefault();
+      const text = items[cwdHighlight].childNodes[0].textContent;
+      $dialogCwd.value = text;
+      $cwdSuggest.classList.add('hidden');
+      requestBrowse(text + '/');
+    }
+  }
+});
 
 function openNewSessionDialog() {
   $dialogCwd.value = state.defaultCwd || '';
+  $cwdSuggest.classList.add('hidden');
   $dialog.showModal();
   $dialogCwd.focus();
   $dialogCwd.select();
@@ -865,6 +1008,7 @@ document.getElementById('new-session-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const cwd = $dialogCwd.value.trim();
   if (!cwd) return;
+  addRecentDir(cwd);
   send({ type: 'new_session', cwd, permissionMode: 'bypass' });
   $dialog.close();
 });

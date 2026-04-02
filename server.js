@@ -357,6 +357,51 @@ wss.on('connection', (ws) => {
         break;
       }
 
+      // ---- Browse directories for autocomplete ----
+      case 'browse_dir': {
+        const input = (msg.path || '').trim();
+        if (!input) {
+          sendJSON(ws, { type: 'dir_listing', entries: [] });
+          break;
+        }
+
+        // Determine the directory to list and optional prefix filter
+        let dirToList = input;
+        let prefix = '';
+        try {
+          const stat = fs.statSync(input);
+          if (!stat.isDirectory()) {
+            sendJSON(ws, { type: 'dir_listing', entries: [] });
+            break;
+          }
+        } catch {
+          // Input isn't a valid dir — try its parent and filter by the basename
+          dirToList = path.dirname(input);
+          prefix = path.basename(input).toLowerCase();
+        }
+
+        try {
+          // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal
+          // Intentional: directory browsing is the purpose of this endpoint.
+          // Auth-gated, read-only listing. Users already have full shell via Claude sessions.
+          const resolvedParent = path.resolve(dirToList); // nosemgrep
+          const entries = fs.readdirSync(resolvedParent, { withFileTypes: true });
+          const dirs = entries
+            .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+            .filter(e => !prefix || e.name.toLowerCase().startsWith(prefix))
+            .slice(0, 20)
+            .map(e => {
+              const full = path.resolve(resolvedParent, e.name); // nosemgrep
+              return full.startsWith(resolvedParent) ? full : null;
+            })
+            .filter(Boolean);
+          sendJSON(ws, { type: 'dir_listing', entries: dirs });
+        } catch {
+          sendJSON(ws, { type: 'dir_listing', entries: [] });
+        }
+        break;
+      }
+
       default:
         sendJSON(ws, { type: 'error', message: `Unknown message type: ${msg.type}` });
     }

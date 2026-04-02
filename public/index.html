@@ -73,7 +73,10 @@
     <form method="dialog" id="new-session-form">
       <h2>New Session</h2>
       <label for="session-cwd">Working directory</label>
-      <input type="text" id="session-cwd" autocomplete="off" spellcheck="false">
+      <div id="cwd-picker">
+        <input type="text" id="session-cwd" autocomplete="off" spellcheck="false">
+        <ul id="cwd-suggestions"></ul>
+      </div>
       <div class="dialog-actions">
         <button type="button" id="dialog-cancel">Cancel</button>
         <button type="submit" id="dialog-create">Create</button>
