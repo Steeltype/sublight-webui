@@ -31,6 +31,7 @@ const state = {
   activeId: null,
   ws: null,
   defaultCwd: '',
+  defaultPermissionMode: 'default',
   reconnectDelay: 1000,
   authToken: sessionStorage.getItem('sublight_token') || null,
   authRequired: false,
@@ -63,6 +64,9 @@ const $notesPanel    = document.getElementById('notes-panel');
 const $notesList     = document.getElementById('notes-list');
 const $artifactsPanel = document.getElementById('artifacts-panel');
 const $artifactsList  = document.getElementById('artifacts-list');
+const $setupScreen    = document.getElementById('setup-screen');
+const $setupToken     = document.getElementById('setup-token');
+const $settingsDialog = document.getElementById('settings-dialog');
 
 // ---------------------------------------------------------------------------
 // Confirm dialog
@@ -92,29 +96,28 @@ function confirm(message) {
 }
 
 // ---------------------------------------------------------------------------
-// Auth
+// Auth & fetch helpers
 // ---------------------------------------------------------------------------
 
-async function checkAuthRequired() {
-  try {
-    const res = await fetch('/auth-status');
-    const data = await res.json();
-    state.authRequired = data.required;
-  } catch {
-    state.authRequired = false;
+/** Fetch with auth token in Authorization header. */
+function authFetch(url, options = {}) {
+  if (state.authToken) {
+    options.headers = { ...options.headers, Authorization: `Bearer ${state.authToken}` };
   }
+  return fetch(url, options);
+}
 
-  if (state.authRequired && !state.authToken) {
-    showAuthScreen();
-  } else {
-    hideAuthScreen();
-    connect();
-  }
+/** Append auth token as query parameter (for img.src and other non-fetch URLs). */
+function authUrl(base) {
+  if (!state.authToken) return base;
+  const sep = base.includes('?') ? '&' : '?';
+  return `${base}${sep}token=${encodeURIComponent(state.authToken)}`;
 }
 
 function showAuthScreen() {
   $authScreen.classList.remove('hidden');
   $appShell.classList.add('hidden');
+  $setupScreen.classList.add('hidden');
   $authToken.focus();
 }
 
@@ -132,6 +135,314 @@ $authForm.addEventListener('submit', (e) => {
   $authError.textContent = '';
   hideAuthScreen();
   connect();
+});
+
+// ---------------------------------------------------------------------------
+// First-run setup
+// ---------------------------------------------------------------------------
+
+function showSetupScreen(token, securityDefaults) {
+  $setupScreen.classList.remove('hidden');
+  $appShell.classList.add('hidden');
+  $authScreen.classList.add('hidden');
+  $setupToken.textContent = token;
+
+  document.getElementById('setup-scope-files').checked = securityDefaults.scopeFilesToSession;
+  document.getElementById('setup-no-svg').checked = !securityDefaults.serveSvg;
+  document.getElementById('setup-default-perms').checked = securityDefaults.defaultPermissionMode === 'default';
+  document.getElementById('setup-max-sessions').value = securityDefaults.maxSessions;
+}
+
+document.getElementById('btn-copy-setup-token').addEventListener('click', () => {
+  navigator.clipboard.writeText($setupToken.textContent);
+  const btn = document.getElementById('btn-copy-setup-token');
+  btn.textContent = 'Copied!';
+  setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+});
+
+document.getElementById('btn-complete-setup').addEventListener('click', async () => {
+  const security = {
+    scopeFilesToSession: document.getElementById('setup-scope-files').checked,
+    serveSvg: !document.getElementById('setup-no-svg').checked,
+    maxSessions: parseInt(document.getElementById('setup-max-sessions').value) || 10,
+    defaultPermissionMode: document.getElementById('setup-default-perms').checked ? 'default' : 'bypass',
+  };
+
+  try {
+    const res = await fetch('/api/setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ security }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      state.authToken = data.token;
+      state.authRequired = true;
+      sessionStorage.setItem('sublight_token', data.token);
+      $setupScreen.classList.add('hidden');
+      $appShell.classList.remove('hidden');
+      connect();
+    }
+  } catch (err) {
+    console.error('Setup failed:', err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Settings dialog
+// ---------------------------------------------------------------------------
+
+document.getElementById('btn-settings').addEventListener('click', async () => {
+  try {
+    const res = await authFetch('/api/settings');
+    if (!res.ok) return;
+    const data = await res.json();
+
+    document.getElementById('settings-token').textContent = data.token;
+    document.getElementById('settings-bind').textContent =
+      `${data.host}:${data.port}` +
+      (data.envOverrides.host || data.envOverrides.port ? ' (from .env)' : '');
+    document.getElementById('setting-scope-files').checked = data.security.scopeFilesToSession;
+    document.getElementById('setting-no-svg').checked = !data.security.serveSvg;
+    document.getElementById('setting-default-perms').checked = data.security.defaultPermissionMode === 'default';
+    document.getElementById('setting-max-sessions').value = data.security.maxSessions;
+
+    $settingsDialog.showModal();
+  } catch (err) {
+    console.error('Failed to load settings:', err);
+  }
+});
+
+document.getElementById('btn-copy-settings-token').addEventListener('click', () => {
+  navigator.clipboard.writeText(document.getElementById('settings-token').textContent);
+  const btn = document.getElementById('btn-copy-settings-token');
+  btn.textContent = 'Copied!';
+  setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+});
+
+document.getElementById('settings-cancel').addEventListener('click', () => {
+  $settingsDialog.close();
+});
+
+document.getElementById('settings-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const security = {
+    scopeFilesToSession: document.getElementById('setting-scope-files').checked,
+    serveSvg: !document.getElementById('setting-no-svg').checked,
+    maxSessions: parseInt(document.getElementById('setting-max-sessions').value) || 10,
+    defaultPermissionMode: document.getElementById('setting-default-perms').checked ? 'default' : 'bypass',
+  };
+
+  try {
+    const res = await authFetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ security }),
+    });
+    if (res.ok) {
+      state.defaultPermissionMode = security.defaultPermissionMode;
+      $settingsDialog.close();
+      showToast('Settings saved');
+    }
+  } catch (err) {
+    console.error('Failed to save settings:', err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Logs dialog
+// ---------------------------------------------------------------------------
+
+const $logsDialog  = document.getElementById('logs-dialog');
+const $logsList    = document.getElementById('logs-list');
+const $logsViewer  = document.getElementById('logs-viewer');
+const $logsContent = document.getElementById('logs-viewer-content');
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatLogDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+}
+
+document.getElementById('btn-logs').addEventListener('click', async () => {
+  await loadLogsList();
+  $logsViewer.classList.add('hidden');
+  $logsList.classList.remove('hidden');
+  $logsDialog.showModal();
+});
+
+async function loadLogsList() {
+  try {
+    const res = await authFetch('/api/logs');
+    if (!res.ok) return;
+    const data = await res.json();
+
+    document.getElementById('logs-storage').textContent = `${data.logs.length} logs \u00b7 ${formatBytes(data.totalSize)}`;
+
+    $logsList.replaceChildren();
+    if (data.logs.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'logs-empty';
+      empty.textContent = 'No session logs yet.';
+      $logsList.appendChild(empty);
+      return;
+    }
+
+    for (const log of data.logs) {
+      const row = document.createElement('div');
+      row.className = 'log-row';
+
+      const info = document.createElement('div');
+      info.className = 'log-info';
+
+      const name = document.createElement('div');
+      name.className = 'log-name';
+      name.textContent = log.sessionName || shortPath(log.cwd) || log.id.slice(0, 8);
+      info.appendChild(name);
+
+      const meta = document.createElement('div');
+      meta.className = 'log-meta';
+      const parts = [formatLogDate(log.startedAt)];
+      if (log.messageCount) parts.push(`${log.messageCount} msg${log.messageCount > 1 ? 's' : ''}`);
+      parts.push(formatBytes(log.size));
+      if (log.permissionMode === 'bypass') parts.push('bypass');
+      meta.textContent = parts.join(' \u00b7 ');
+      info.appendChild(meta);
+
+      row.appendChild(info);
+
+      const actions = document.createElement('div');
+      actions.className = 'log-actions';
+
+      const viewBtn = document.createElement('button');
+      viewBtn.textContent = 'View';
+      viewBtn.title = 'View log contents';
+      viewBtn.addEventListener('click', (e) => { e.stopPropagation(); viewLog(log); });
+      actions.appendChild(viewBtn);
+
+      const dlBtn = document.createElement('button');
+      dlBtn.textContent = 'Save';
+      dlBtn.title = 'Download NDJSON';
+      dlBtn.addEventListener('click', (e) => { e.stopPropagation(); downloadLog(log); });
+      actions.appendChild(dlBtn);
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'danger-btn';
+      delBtn.textContent = '\u00d7';
+      delBtn.title = 'Delete log';
+      delBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const ok = await confirm('Delete this session log?');
+        if (!ok) return;
+        const r = await authFetch(`/api/logs/${log.id}`, { method: 'DELETE' });
+        if (r.ok) loadLogsList();
+      });
+      actions.appendChild(delBtn);
+
+      row.appendChild(actions);
+      $logsList.appendChild(row);
+    }
+  } catch (err) {
+    console.error('Failed to load logs:', err);
+  }
+}
+
+function shortPath(p) {
+  if (!p) return null;
+  const parts = p.replace(/\\/g, '/').split('/');
+  return parts[parts.length - 1] || parts[parts.length - 2] || null;
+}
+
+async function viewLog(log) {
+  try {
+    const res = await authFetch(`/api/logs/${log.id}`);
+    if (!res.ok) return;
+    const text = await res.text();
+    const lines = text.split('\n').filter(Boolean);
+
+    document.getElementById('logs-viewer-title').textContent =
+      log.sessionName || shortPath(log.cwd) || log.id.slice(0, 8);
+
+    $logsContent.replaceChildren();
+
+    for (const line of lines) {
+      let entry;
+      try { entry = JSON.parse(line); } catch { continue; }
+
+      const el = document.createElement('div');
+      el.className = 'log-entry';
+
+      if (entry.type === 'user_message') {
+        el.classList.add('log-user');
+        el.textContent = entry.text;
+      } else if (entry.type === 'claude_event' && entry.event?.type === 'assistant') {
+        const blocks = entry.event.message?.content;
+        if (!Array.isArray(blocks)) continue;
+        const textParts = blocks.filter(b => b.type === 'text').map(b => b.text).join('');
+        if (!textParts) continue;
+        el.classList.add('log-assistant');
+        el.textContent = textParts;
+      } else if (entry.type === 'claude_event' && entry.event?.type === 'result' && entry.event.result) {
+        el.classList.add('log-assistant');
+        el.textContent = entry.event.result;
+      } else if (entry.type === 'error') {
+        el.classList.add('log-error');
+        el.textContent = entry.message;
+      } else if (entry.type === 'session_created') {
+        el.classList.add('log-system');
+        el.textContent = `Session started \u00b7 ${shortPath(entry.cwd)} \u00b7 ${entry.permissionMode}`;
+      } else {
+        // Skip internal events (turn_end, stderr, parse_error, etc.) for readability
+        continue;
+      }
+
+      $logsContent.appendChild(el);
+    }
+
+    $logsList.classList.add('hidden');
+    $logsViewer.classList.remove('hidden');
+  } catch (err) {
+    console.error('Failed to load log:', err);
+  }
+}
+
+async function downloadLog(log) {
+  try {
+    const res = await authFetch(`/api/logs/${log.id}`);
+    if (!res.ok) return;
+    const blob = await res.blob();
+    const name = (log.sessionName || log.id.slice(0, 8)) + '.ndjson';
+    downloadBlob(blob, name);
+  } catch (err) {
+    console.error('Failed to download log:', err);
+  }
+}
+
+document.getElementById('logs-viewer-back').addEventListener('click', () => {
+  $logsViewer.classList.add('hidden');
+  $logsList.classList.remove('hidden');
+});
+
+document.getElementById('logs-clear-all').addEventListener('click', async () => {
+  const ok = await confirm('Delete all logs from inactive sessions? Active session logs are kept.');
+  if (!ok) return;
+  const res = await authFetch('/api/logs', { method: 'DELETE' });
+  if (res.ok) {
+    const data = await res.json();
+    showToast(`Deleted ${data.deleted} log${data.deleted !== 1 ? 's' : ''}`);
+    loadLogsList();
+  }
+});
+
+document.getElementById('logs-close').addEventListener('click', () => {
+  $logsDialog.close();
 });
 
 // ---------------------------------------------------------------------------
@@ -265,6 +576,7 @@ function handleServerMessage(msg) {
 
     case 'defaults': {
       state.defaultCwd = msg.cwd || '';
+      state.defaultPermissionMode = msg.defaultPermissionMode || 'default';
       break;
     }
 
@@ -982,7 +1294,7 @@ function renderArtifactCard(artifact) {
 
   if (artifact.type === 'image') {
     const img = document.createElement('img');
-    img.src = `/local-file?path=${encodeURIComponent(artifact.path)}`;
+    img.src = authUrl(`/local-file?path=${encodeURIComponent(artifact.path)}`);
     img.alt = artifact.caption || 'Image artifact';
     img.loading = 'lazy';
     card.appendChild(img);
@@ -1058,7 +1370,7 @@ function exportArtifact(artifact) {
 
   if (artifact.type === 'image') {
     // Download image via fetch
-    fetch(`/local-file?path=${encodeURIComponent(artifact.path)}`)
+    authFetch(`/local-file?path=${encodeURIComponent(artifact.path)}`)
       .then(r => r.blob())
       .then(b => {
         const ext = artifact.path.split('.').pop() || 'png';
@@ -1317,6 +1629,7 @@ $dialogCwd.addEventListener('keydown', (e) => {
 
 function openNewSessionDialog() {
   $dialogCwd.value = state.defaultCwd || '';
+  document.getElementById('session-bypass').checked = state.defaultPermissionMode === 'bypass';
   $cwdSuggest.classList.add('hidden');
   $dialog.showModal();
   $dialogCwd.focus();
@@ -1328,7 +1641,8 @@ document.getElementById('new-session-form').addEventListener('submit', (e) => {
   const cwd = $dialogCwd.value.trim();
   if (!cwd) return;
   addRecentDir(cwd);
-  send({ type: 'new_session', cwd, permissionMode: 'bypass' });
+  const bypass = document.getElementById('session-bypass').checked;
+  send({ type: 'new_session', cwd, permissionMode: bypass ? 'bypass' : 'default' });
   $dialog.close();
 });
 
@@ -1467,7 +1781,37 @@ function consumeAttachments() {
 }
 
 // ---------------------------------------------------------------------------
-// Boot
+// Boot — check for first-run setup, then auth
 // ---------------------------------------------------------------------------
 
-checkAuthRequired();
+async function boot() {
+  try {
+    const res = await fetch('/api/setup-status');
+    const data = await res.json();
+
+    if (data.setupRequired) {
+      showSetupScreen(data.token, data.settings);
+      return;
+    }
+
+    state.authRequired = data.authRequired;
+  } catch {
+    // Fallback: server may not support setup-status yet
+    try {
+      const res = await fetch('/auth-status');
+      const data = await res.json();
+      state.authRequired = data.required;
+    } catch {
+      state.authRequired = false;
+    }
+  }
+
+  if (state.authRequired && !state.authToken) {
+    showAuthScreen();
+  } else {
+    hideAuthScreen();
+    connect();
+  }
+}
+
+boot();

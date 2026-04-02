@@ -5,12 +5,43 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Sublight</title>
   <link rel="stylesheet" href="style.css">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css" integrity="sha384-wH75j6z1lH97ZOpMOInqhgKzFkAInZPPSPlZpYKYTOqsaizPvhQZmAtLcPKXpLyH" crossorigin="anonymous">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js" integrity="sha384-RH2xi4eIQ/gjtbs9fUXM68sLSi99C7ZWBRX1vDrVv6GQXRibxXLbwO2NGZB74MbU" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js" integrity="sha384-948ahk4ZmxYVYOc+rxN1H2gM1EJ2Duhp7uHtZ4WSLkV4Vtx5MUqnV+l7u9B+jFv+" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.3.3/dist/purify.min.js" integrity="sha384-pcBjnGbkyKeOXaoFkmJiuR9E08/6gkmus6/Strimnxtl3uk0Hx23v345pWyC/MMr" crossorigin="anonymous"></script>
+  <link rel="stylesheet" href="vendor/github-dark.min.css">
+  <script src="vendor/highlight.min.js"></script>
+  <script src="vendor/marked.min.js"></script>
+  <script src="vendor/purify.min.js"></script>
 </head>
 <body>
+  <!-- ─── First-run setup screen ─────────────────────────────────── -->
+  <div id="setup-screen" class="hidden">
+    <div class="setup-card">
+      <h1>Sublight</h1>
+      <p class="setup-subtitle">First-time setup</p>
+
+      <section class="setup-section">
+        <h3>Access Token</h3>
+        <p class="setup-hint">You'll need this to connect. Copy it now — it won't be shown again via the server.</p>
+        <div class="token-row">
+          <code id="setup-token"></code>
+          <button type="button" id="btn-copy-setup-token">Copy</button>
+        </div>
+      </section>
+
+      <section class="setup-section">
+        <h3>Security Defaults</h3>
+        <p class="setup-hint">All protections on by default. Change anytime in Settings.</p>
+        <label class="setting-label"><input type="checkbox" id="setup-scope-files" checked> Restrict file serving to session directories</label>
+        <label class="setting-label"><input type="checkbox" id="setup-no-svg" checked> Block SVG file serving</label>
+        <label class="setting-label"><input type="checkbox" id="setup-default-perms" checked> Require Claude permission prompts by default</label>
+        <div class="setting-inline">
+          <label for="setup-max-sessions">Max concurrent sessions</label>
+          <input type="number" id="setup-max-sessions" value="10" min="1" max="50">
+        </div>
+      </section>
+
+      <button id="btn-complete-setup" class="primary-btn">Save &amp; Start</button>
+    </div>
+  </div>
+
   <!-- ─── Auth screen ───────────────────────────────────────────── -->
   <div id="auth-screen" class="hidden">
     <form id="auth-form">
@@ -27,7 +58,11 @@
     <aside id="sidebar">
       <div class="sidebar-header">
         <h1>Sublight</h1>
-        <button id="btn-new-session" title="New session">+</button>
+        <div class="sidebar-actions">
+          <button id="btn-logs" title="Session logs">&#128220;</button>
+          <button id="btn-settings" title="Settings">&#9881;</button>
+          <button id="btn-new-session" title="New session">+</button>
+        </div>
       </div>
       <ul id="session-list"></ul>
     </aside>
@@ -89,6 +124,11 @@
         <input type="text" id="session-cwd" autocomplete="off" spellcheck="false">
         <ul id="cwd-suggestions"></ul>
       </div>
+      <label class="setting-label session-bypass-label">
+        <input type="checkbox" id="session-bypass">
+        Skip permission prompts
+        <span class="option-warning">Claude will have unrestricted file and shell access</span>
+      </label>
       <div class="dialog-actions">
         <button type="button" id="dialog-cancel">Cancel</button>
         <button type="submit" id="dialog-create">Create</button>
@@ -105,6 +145,67 @@
         <button type="button" id="confirm-ok">Confirm</button>
       </div>
     </div>
+  </dialog>
+
+  <!-- ─── Logs dialog ────────────────────────────────────────────── -->
+  <dialog id="logs-dialog">
+    <div id="logs-container">
+      <div id="logs-header">
+        <h2>Session Logs</h2>
+        <span id="logs-storage" class="setting-value"></span>
+      </div>
+      <p class="logs-notice">Logs record full session transcripts (messages, tool use, errors) as NDJSON. They are stored locally and never sent anywhere.</p>
+      <div id="logs-list"></div>
+      <div id="logs-viewer" class="hidden">
+        <div id="logs-viewer-header">
+          <button type="button" id="logs-viewer-back">&larr; Back</button>
+          <span id="logs-viewer-title"></span>
+        </div>
+        <div id="logs-viewer-content"></div>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" id="logs-clear-all" class="danger-btn">Clear Old Logs</button>
+        <button type="button" id="logs-close">Close</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- ─── Settings dialog ─────────────────────────────────────────── -->
+  <dialog id="settings-dialog">
+    <form method="dialog" id="settings-form">
+      <h2>Settings</h2>
+
+      <section class="settings-section">
+        <h3>Access</h3>
+        <div class="setting-inline">
+          <label>Token</label>
+          <div class="token-row compact">
+            <code id="settings-token"></code>
+            <button type="button" id="btn-copy-settings-token">Copy</button>
+          </div>
+        </div>
+        <div class="setting-inline">
+          <label>Bind</label>
+          <span id="settings-bind" class="setting-value"></span>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h3>Security</h3>
+        <label class="setting-label"><input type="checkbox" id="setting-scope-files"> Restrict file serving to session directories</label>
+        <label class="setting-label"><input type="checkbox" id="setting-no-svg"> Block SVG file serving</label>
+        <label class="setting-label"><input type="checkbox" id="setting-default-perms"> Require Claude permission prompts by default</label>
+        <div class="setting-inline">
+          <label for="setting-max-sessions">Max concurrent sessions</label>
+          <input type="number" id="setting-max-sessions" min="1" max="50">
+        </div>
+      </section>
+
+      <div class="dialog-actions">
+        <button type="button" id="settings-cancel">Cancel</button>
+        <button type="submit" id="settings-save">Save</button>
+      </div>
+    </form>
   </dialog>
 
   <script src="app.js"></script>

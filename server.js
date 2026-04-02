@@ -12,13 +12,97 @@ import { WebSocketServer } from 'ws';
 config(); // load .env
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = process.env.PORT || 3700;
-const HOST = process.env.HOST || '0.0.0.0';
-const AUTH_TOKEN = process.env.SUBLIGHT_TOKEN || null;
 const LOG_DIR = path.join(__dirname, 'logs');
 const ARTIFACT_MCP_PATH = path.join(__dirname, 'artifact-mcp.js');
+const SETTINGS_PATH = path.join(__dirname, 'settings.json');
 
 fs.mkdirSync(LOG_DIR, { recursive: true });
+
+// ---------------------------------------------------------------------------
+// Settings — persisted to settings.json, managed via UI
+// ---------------------------------------------------------------------------
+
+const DEFAULT_SETTINGS = {
+  firstRun: true,
+  token: null,
+  host: '127.0.0.1',
+  port: 3700,
+  security: {
+    scopeFilesToSession: true,
+    serveSvg: false,
+    maxSessions: 10,
+    defaultPermissionMode: 'default',
+  },
+};
+
+function loadSettings() {
+  try {
+    const raw = fs.readFileSync(SETTINGS_PATH, 'utf-8');
+    const saved = JSON.parse(raw);
+    return {
+      ...DEFAULT_SETTINGS,
+      ...saved,
+      security: { ...DEFAULT_SETTINGS.security, ...(saved.security || {}) },
+    };
+  } catch {
+    // First run — create settings with a fresh token
+    const fresh = { ...DEFAULT_SETTINGS, token: crypto.randomUUID() };
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(fresh, null, 2));
+    return fresh;
+  }
+}
+
+function saveSettings(updates) {
+  const current = loadSettings();
+  const merged = {
+    ...current,
+    ...updates,
+    security: { ...current.security, ...(updates.security || {}) },
+  };
+  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(merged, null, 2));
+  return merged;
+}
+
+let settings = loadSettings();
+
+// .env overrides settings.json (backwards-compatible)
+const PORT = process.env.PORT || settings.port;
+const HOST = process.env.HOST || settings.host;
+const AUTH_TOKEN = process.env.SUBLIGHT_TOKEN || settings.token;
+
+// ---------------------------------------------------------------------------
+// Auth helpers
+// ---------------------------------------------------------------------------
+
+function timingSafeCompare(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+/** Returns true if authorized. Sends 401 and returns false otherwise. */
+function httpAuth(req, res) {
+  if (!AUTH_TOKEN) return true;
+  const token = req.headers.authorization?.replace('Bearer ', '') || req.query.token;
+  if (!token || !timingSafeCompare(token, AUTH_TOKEN)) {
+    res.status(401).json({ error: 'Authentication required' });
+    return false;
+  }
+  return true;
+}
+
+/** Check if a file path falls under any active session's cwd. */
+function isPathInSessionScope(filePath) {
+  for (const session of sessions.values()) {
+    const sessionRoot = path.resolve(session.cwd);
+    if (filePath.startsWith(sessionRoot + path.sep) || filePath === sessionRoot) {
+      return true;
+    }
+  }
+  return false;
+}
 
 // ---------------------------------------------------------------------------
 // Express — security headers + static files + artifact endpoint
@@ -30,31 +114,205 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: [
-        "'self'",
-        'https://cdnjs.cloudflare.com',
-        'https://cdn.jsdelivr.net',
-      ],
-      styleSrc: [
-        "'self'",
-        "'unsafe-inline'",
-        'https://cdnjs.cloudflare.com',
-      ],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
       connectSrc: ["'self'", 'ws:', 'wss:'],
       imgSrc: ["'self'", 'data:', 'blob:'],
     },
   },
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// ---------------------------------------------------------------------------
+// Setup & settings API (no auth during first-run setup)
+// ---------------------------------------------------------------------------
+
+app.get('/api/setup-status', (_req, res) => {
+  if (settings.firstRun) {
+    res.json({ setupRequired: true, token: AUTH_TOKEN, settings: settings.security });
+  } else {
+    res.json({ setupRequired: false, authRequired: AUTH_TOKEN !== null });
+  }
+});
+
+app.post('/api/setup', (req, res) => {
+  if (!settings.firstRun) {
+    return res.status(403).json({ error: 'Setup already completed' });
+  }
+  settings = saveSettings({
+    firstRun: false,
+    security: req.body.security || {},
+  });
+  res.json({ ok: true, token: AUTH_TOKEN });
+});
+
+app.get('/api/settings', (req, res) => {
+  if (!httpAuth(req, res)) return;
+  res.json({
+    token: AUTH_TOKEN,
+    host: HOST,
+    port: PORT,
+    envOverrides: {
+      token: !!process.env.SUBLIGHT_TOKEN,
+      host: !!process.env.HOST,
+      port: !!process.env.PORT,
+    },
+    security: settings.security,
+  });
+});
+
+app.post('/api/settings', (req, res) => {
+  if (!httpAuth(req, res)) return;
+  if (req.body.security) {
+    settings = saveSettings({ security: req.body.security });
+  }
+  res.json({ ok: true, security: settings.security });
+});
 
 app.get('/auth-status', (_req, res) => {
   res.json({ required: AUTH_TOKEN !== null });
 });
 
-// Serve local files (images etc.) for the artifact panel
+// ---------------------------------------------------------------------------
+// Log management API
+// ---------------------------------------------------------------------------
+
+/** Read first N lines of a log file and extract metadata. */
+function extractLogMeta(logPath) {
+  try {
+    const content = fs.readFileSync(logPath, 'utf-8');
+    const lines = content.split('\n').filter(Boolean);
+    if (lines.length === 0) return null;
+
+    let sessionName = null;
+    let cwd = null;
+    let permissionMode = null;
+    let messageCount = 0;
+
+    for (const line of lines.slice(0, 50)) {
+      try {
+        const entry = JSON.parse(line);
+        if (entry.type === 'session_created') {
+          cwd = entry.cwd;
+          permissionMode = entry.permissionMode;
+        }
+        if (entry.type === 'artifact' && entry.artifact?.type === 'set_session_name') {
+          sessionName = entry.artifact.name;
+        }
+        if (entry.type === 'user_message') messageCount++;
+      } catch { continue; }
+    }
+
+    // Count remaining user messages if file is longer
+    if (lines.length > 50) {
+      for (const line of lines.slice(50)) {
+        if (line.includes('"user_message"')) messageCount++;
+      }
+    }
+
+    const firstLine = JSON.parse(lines[0]);
+    const lastLine = JSON.parse(lines[lines.length - 1]);
+
+    return {
+      startedAt: firstLine.ts,
+      endedAt: lastLine.ts,
+      sessionName,
+      cwd,
+      permissionMode,
+      messageCount,
+      entryCount: lines.length,
+    };
+  } catch {
+    return null;
+  }
+}
+
+app.get('/api/logs', (req, res) => {
+  if (!httpAuth(req, res)) return;
+  try {
+    const files = fs.readdirSync(LOG_DIR)
+      .filter(f => f.endsWith('.ndjson'))
+      .map(f => {
+        // nosemgrep — f comes from readdirSync (server-controlled directory listing), not user input
+        const full = path.join(LOG_DIR, f);
+        const stat = fs.statSync(full);
+        const id = f.replace('.ndjson', '');
+        const meta = extractLogMeta(full);
+        return {
+          id,
+          filename: f,
+          size: stat.size,
+          modifiedAt: stat.mtime.toISOString(),
+          ...meta,
+        };
+      })
+      .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+
+    const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+    res.json({ logs: files, totalSize });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/logs/:id', (req, res) => {
+  if (!httpAuth(req, res)) return;
+  // nosemgrep — input sanitized to [a-f0-9-] (UUID chars only) + startsWith guard
+  const safe = req.params.id.replace(/[^a-f0-9-]/g, '');
+  const logPath = path.resolve(LOG_DIR, `${safe}.ndjson`); // nosemgrep
+  if (!logPath.startsWith(path.resolve(LOG_DIR))) {
+    return res.status(403).send('Invalid log ID');
+  }
+  if (!fs.existsSync(logPath)) { // nosemgrep
+    return res.status(404).json({ error: 'Log not found' });
+  }
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  fs.createReadStream(logPath).pipe(res); // nosemgrep
+});
+
+app.delete('/api/logs/:id', (req, res) => {
+  if (!httpAuth(req, res)) return;
+  // nosemgrep — input sanitized to [a-f0-9-] (UUID chars only) + startsWith guard
+  const safe = req.params.id.replace(/[^a-f0-9-]/g, '');
+  const logPath = path.resolve(LOG_DIR, `${safe}.ndjson`); // nosemgrep
+  if (!logPath.startsWith(path.resolve(LOG_DIR))) {
+    return res.status(403).send('Invalid log ID');
+  }
+  // Don't delete logs for active sessions
+  if (sessionLogPaths.has(safe)) {
+    return res.status(409).json({ error: 'Cannot delete log for an active session' });
+  }
+  try {
+    fs.unlinkSync(logPath); // nosemgrep
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/logs', (req, res) => {
+  if (!httpAuth(req, res)) return;
+  try {
+    const files = fs.readdirSync(LOG_DIR).filter(f => f.endsWith('.ndjson'));
+    let deleted = 0;
+    for (const f of files) {
+      const id = f.replace('.ndjson', '');
+      // Skip active session logs
+      if (sessionLogPaths.has(id)) continue;
+      fs.unlinkSync(path.join(LOG_DIR, f));
+      deleted++;
+    }
+    res.json({ ok: true, deleted });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Serve local files (images etc.) for the artifact panel — auth-gated, scoped
 app.get('/local-file', (req, res) => {
+  if (!httpAuth(req, res)) return;
   // nosemgrep — intentional: authenticated file serving for artifact display
   const filePath = req.query.path;
   if (!filePath || typeof filePath !== 'string') {
@@ -62,9 +320,14 @@ app.get('/local-file', (req, res) => {
   }
   const resolved = path.resolve(filePath); // nosemgrep
   const ext = path.extname(resolved).toLowerCase();
-  const allowed = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp'];
+  const allowed = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'];
+  if (settings.security.serveSvg) allowed.push('.svg');
   if (!allowed.includes(ext)) {
     return res.status(403).send('File type not allowed');
+  }
+  // Scope check: when enabled, only serve files under active session directories
+  if (settings.security.scopeFilesToSession && !isPathInSessionScope(resolved)) {
+    return res.status(403).send('Path outside session scope');
   }
   // nosemgrep — intentional: auth-gated local file serving for artifact display.
   // Only serves image extensions. Users already have full shell access via Claude sessions.
@@ -77,12 +340,17 @@ app.get('/local-file', (req, res) => {
   fs.createReadStream(resolved).pipe(res); // nosemgrep
 });
 
-// Artifact callback — receives POSTs from the MCP artifact server
+// Artifact callback — receives POSTs from the MCP artifact server (per-session secret)
 app.post('/artifact', (req, res) => {
   const { sessionId, ...artifact } = req.body;
   const session = sessions.get(sessionId);
   if (!session) {
     return res.status(404).json({ error: 'Unknown session' });
+  }
+  // Verify per-session artifact secret — only the MCP server spawned for this session knows it
+  const secret = req.headers['x-artifact-secret'];
+  if (!secret || !timingSafeCompare(secret, session.artifactSecret)) {
+    return res.status(401).json({ error: 'Invalid artifact secret' });
   }
 
   // Handle set_session_name server-side (updates session state)
@@ -165,13 +433,13 @@ function logToSession(session, entry) {
 // WebSocket server — with auth on upgrade
 // ---------------------------------------------------------------------------
 
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 10 * 1024 * 1024 });
 
 httpServer.on('upgrade', (req, socket, head) => {
   if (AUTH_TOKEN) {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const token = url.searchParams.get('token');
-    if (token !== AUTH_TOKEN) {
+    if (!token || !timingSafeCompare(token, AUTH_TOKEN)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;
@@ -210,6 +478,10 @@ function killSession(session) {
     session.proc.kill('SIGTERM');
     session.proc = null;
   }
+  // Clean up MCP config file
+  if (session.mcpConfigPath) {
+    fs.unlink(session.mcpConfigPath, () => {});
+  }
   sessions.delete(session.localId);
   sessionLogPaths.delete(session.localId);
 }
@@ -218,10 +490,11 @@ function killSession(session) {
 // MCP config for artifact server
 // ---------------------------------------------------------------------------
 
-function writeMcpConfig(sessionId) {
+function writeMcpConfig(session) {
   // nosemgrep — sessionId is server-generated UUID from crypto.randomUUID()
-  const safe = sessionId.replace(/[^a-f0-9-]/g, '');
+  const safe = session.localId.replace(/[^a-f0-9-]/g, '');
   const configPath = path.join(LOG_DIR, `mcp-${safe}.json`); // nosemgrep
+  session.mcpConfigPath = configPath;
   const config = {
     mcpServers: {
       'sublight-artifacts': {
@@ -229,7 +502,8 @@ function writeMcpConfig(sessionId) {
         args: [ARTIFACT_MCP_PATH],
         env: {
           SUBLIGHT_ARTIFACT_URL: `http://localhost:${PORT}/artifact`,
-          SUBLIGHT_SESSION_ID: sessionId,
+          SUBLIGHT_SESSION_ID: session.localId,
+          SUBLIGHT_ARTIFACT_SECRET: session.artifactSecret,
         },
       },
     },
@@ -262,12 +536,16 @@ function ensureProcess(session, ws) {
   }
 
   // Inject our artifact MCP server alongside existing MCP configs
-  const mcpConfigPath = writeMcpConfig(session.localId);
+  const mcpConfigPath = writeMcpConfig(session);
   args.push('--mcp-config', mcpConfigPath);
+
+  // Strip Sublight secrets from the subprocess environment — Claude doesn't need them
+  const childEnv = { ...process.env };
+  delete childEnv.SUBLIGHT_TOKEN;
 
   const proc = spawn('claude', args, {
     cwd: session.cwd,
-    env: { ...process.env },
+    env: childEnv,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
@@ -403,9 +681,13 @@ wss.on('connection', (ws) => {
 
     switch (msg.type) {
       case 'new_session': {
+        if (sessions.size >= settings.security.maxSessions) {
+          sendJSON(ws, { type: 'error', message: `Session limit reached (max ${settings.security.maxSessions}). Close a session first.` });
+          break;
+        }
         const localId = crypto.randomUUID();
         const cwd = msg.cwd || process.cwd();
-        const permissionMode = msg.permissionMode || 'default';
+        const permissionMode = msg.permissionMode || settings.security.defaultPermissionMode;
         const session = {
           localId,
           claudeSession: null,
@@ -414,6 +696,8 @@ wss.on('connection', (ws) => {
           status: 'idle',
           name: msg.name || null,
           permissionMode,
+          artifactSecret: crypto.randomUUID(),
+          mcpConfigPath: null,
         };
         sessions.set(localId, session);
         connSessions.add(localId);
@@ -475,7 +759,11 @@ wss.on('connection', (ws) => {
       }
 
       case 'get_defaults': {
-        sendJSON(ws, { type: 'defaults', cwd: process.cwd() });
+        sendJSON(ws, {
+          type: 'defaults',
+          cwd: process.cwd(),
+          defaultPermissionMode: settings.security.defaultPermissionMode,
+        });
         break;
       }
 
@@ -560,9 +848,15 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 httpServer.listen(PORT, HOST, () => {
   console.log(`Sublight WebUI running at http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
   if (AUTH_TOKEN) {
-    console.log('Auth: token required (set via SUBLIGHT_TOKEN in .env)');
+    console.log('Auth: token required');
   } else {
-    console.log('Auth: disabled (set SUBLIGHT_TOKEN in .env to enable)');
+    console.log('\x1b[33m⚠ Auth: DISABLED — anyone with network access can use this instance\x1b[0m');
+  }
+  if (HOST === '0.0.0.0') {
+    console.log('\x1b[33m⚠ Listening on all interfaces — accessible from your network\x1b[0m');
+  }
+  if (settings.firstRun) {
+    console.log('\x1b[36m→ First run — open the UI to complete setup\x1b[0m');
   }
   console.log(`Artifact MCP: ${ARTIFACT_MCP_PATH}`);
 });

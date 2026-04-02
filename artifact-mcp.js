@@ -15,6 +15,7 @@ import { z } from 'zod';
 
 const ARTIFACT_URL = process.env.SUBLIGHT_ARTIFACT_URL;
 const SESSION_ID = process.env.SUBLIGHT_SESSION_ID;
+const ARTIFACT_SECRET = process.env.SUBLIGHT_ARTIFACT_SECRET;
 
 async function postArtifact(artifact) {
   if (!ARTIFACT_URL) {
@@ -23,7 +24,10 @@ async function postArtifact(artifact) {
   try {
     const res = await fetch(ARTIFACT_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Artifact-Secret': ARTIFACT_SECRET || '',
+      },
       body: JSON.stringify({ sessionId: SESSION_ID, ...artifact }),
     });
     if (!res.ok) return { error: `Artifact POST failed: ${res.status}` };
