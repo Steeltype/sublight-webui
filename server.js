@@ -156,7 +156,9 @@ function logToSession(session, entry) {
   const logPath = sessionLogPaths.get(session.localId);
   if (!logPath) return;
   const line = JSON.stringify({ ts: new Date().toISOString(), ...entry });
-  fs.appendFile(logPath, line + '\n', () => {});
+  fs.appendFile(logPath, line + '\n', (err) => {
+    if (err) console.error(`[log] failed to write to ${logPath}: ${err.message}`);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -285,7 +287,8 @@ function ensureProcess(session, ws) {
       let event;
       try {
         event = JSON.parse(trimmed);
-      } catch {
+      } catch (err) {
+        logToSession(session, { type: 'parse_error', message: err.message, raw: trimmed.slice(0, 200) });
         continue;
       }
 
@@ -519,7 +522,8 @@ wss.on('connection', (ws) => {
             })
             .filter(Boolean);
           sendJSON(ws, { type: 'dir_listing', entries: dirs });
-        } catch {
+        } catch (err) {
+          console.error(`[browse_dir] ${err.message}`);
           sendJSON(ws, { type: 'dir_listing', entries: [] });
         }
         break;
