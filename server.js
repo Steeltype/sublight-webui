@@ -71,7 +71,10 @@ app.get('/local-file', (req, res) => {
   if (!fs.existsSync(resolved)) { // nosemgrep
     return res.status(404).send('File not found');
   }
-  res.sendFile(resolved); // nosemgrep
+  // Stream file directly — res.sendFile has issues with some Windows paths in Express 5
+  const mimeTypes = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.bmp': 'image/bmp' };
+  res.setHeader('Content-Type', mimeTypes[ext] || 'application/octet-stream');
+  fs.createReadStream(resolved).pipe(res); // nosemgrep
 });
 
 // Artifact callback — receives POSTs from the MCP artifact server
