@@ -35,6 +35,9 @@ const state = {
   authToken: sessionStorage.getItem('sublight_token') || null,
   authRequired: false,
   notesVisible: false,
+  artifactsVisible: false,
+  /** Map<sessionId, artifact[]> */
+  artifacts: new Map(),
 };
 
 // ---------------------------------------------------------------------------
@@ -58,6 +61,8 @@ const $authError     = document.getElementById('auth-error');
 const $appShell      = document.getElementById('app-shell');
 const $notesPanel    = document.getElementById('notes-panel');
 const $notesList     = document.getElementById('notes-list');
+const $artifactsPanel = document.getElementById('artifacts-panel');
+const $artifactsList  = document.getElementById('artifacts-list');
 
 // ---------------------------------------------------------------------------
 // Confirm dialog
@@ -260,6 +265,30 @@ function handleServerMessage(msg) {
 
     case 'defaults': {
       state.defaultCwd = msg.cwd || '';
+      break;
+    }
+
+    case 'artifact': {
+      const { sessionId, artifact } = msg;
+      if (!state.artifacts.has(sessionId)) {
+        state.artifacts.set(sessionId, []);
+      }
+      state.artifacts.get(sessionId).push(artifact);
+
+      // Handle notifications as toast
+      if (artifact.type === 'notification') {
+        showToast(artifact.message);
+      }
+
+      // Auto-open artifacts panel on first artifact
+      if (!state.artifactsVisible) {
+        state.artifactsVisible = true;
+        $artifactsPanel.classList.remove('hidden');
+      }
+
+      if (sessionId === state.activeId) {
+        renderArtifacts();
+      }
       break;
     }
   }
@@ -494,6 +523,7 @@ function switchSession(id) {
   renderSidebar();
   renderChat();
   renderNotes();
+  if (state.artifactsVisible) renderArtifacts();
 }
 
 function renderChat() {
@@ -846,6 +876,84 @@ document.getElementById('btn-notes').addEventListener('click', () => {
   $notesPanel.classList.toggle('hidden', !state.notesVisible);
   if (state.notesVisible) renderNotes();
 });
+
+// ---------------------------------------------------------------------------
+// Artifacts panel
+// ---------------------------------------------------------------------------
+
+function renderArtifacts() {
+  if (!state.activeId) return;
+  const artifacts = state.artifacts.get(state.activeId) || [];
+  $artifactsList.replaceChildren();
+
+  if (artifacts.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'artifacts-empty';
+    empty.textContent = 'No artifacts yet. Claude can use show_image and show_artifact tools to display content here.';
+    $artifactsList.appendChild(empty);
+    return;
+  }
+
+  for (const artifact of artifacts) {
+    const card = document.createElement('div');
+    card.className = 'artifact-card';
+
+    if (artifact.type === 'image') {
+      const img = document.createElement('img');
+      img.src = `/local-file?path=${encodeURIComponent(artifact.path)}`;
+      img.alt = artifact.caption || 'Image artifact';
+      img.loading = 'lazy';
+      card.appendChild(img);
+      if (artifact.caption) {
+        const cap = document.createElement('div');
+        cap.className = 'artifact-caption';
+        cap.textContent = artifact.caption;
+        card.appendChild(cap);
+      }
+    } else if (artifact.type === 'code') {
+      const title = document.createElement('div');
+      title.className = 'artifact-title';
+      title.textContent = artifact.title;
+      card.appendChild(title);
+      const pre = document.createElement('pre');
+      const code = document.createElement('code');
+      code.textContent = artifact.content;
+      if (artifact.language) {
+        code.className = `language-${artifact.language}`;
+        hljs.highlightElement(code);
+      }
+      pre.appendChild(code);
+      card.appendChild(pre);
+    }
+
+    $artifactsList.appendChild(card);
+  }
+
+  // Scroll to latest
+  $artifactsList.scrollTop = $artifactsList.scrollHeight;
+}
+
+document.getElementById('btn-artifacts').addEventListener('click', () => {
+  state.artifactsVisible = !state.artifactsVisible;
+  $artifactsPanel.classList.toggle('hidden', !state.artifactsVisible);
+  if (state.artifactsVisible) renderArtifacts();
+});
+
+// ---------------------------------------------------------------------------
+// Toast notifications
+// ---------------------------------------------------------------------------
+
+function showToast(message) {
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('visible'));
+  setTimeout(() => {
+    toast.classList.remove('visible');
+    setTimeout(() => toast.remove(), 300);
+  }, 4000);
+}
 
 // ---------------------------------------------------------------------------
 // New Session dialog with folder autocomplete

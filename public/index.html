@@ -44,11 +44,18 @@
           <span id="chat-status"></span>
           <div id="chat-actions">
             <button id="btn-save" title="Save session">Save</button>
+            <button id="btn-artifacts" title="Toggle artifacts">Artifacts</button>
             <button id="btn-notes" title="Toggle notes">Notes</button>
           </div>
         </div>
         <div id="chat-body">
           <div id="messages"></div>
+          <div id="artifacts-panel" class="hidden">
+            <div id="artifacts-header">
+              <span>Artifacts</span>
+            </div>
+            <div id="artifacts-list"></div>
+          </div>
           <div id="notes-panel" class="hidden">
             <div id="notes-header">
               <span>Session Notes</span>

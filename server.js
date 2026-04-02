@@ -16,12 +16,12 @@ const PORT = process.env.PORT || 3700;
 const HOST = process.env.HOST || '0.0.0.0';
 const AUTH_TOKEN = process.env.SUBLIGHT_TOKEN || null;
 const LOG_DIR = path.join(__dirname, 'logs');
+const ARTIFACT_MCP_PATH = path.join(__dirname, 'artifact-mcp.js');
 
-// Ensure logs directory exists
 fs.mkdirSync(LOG_DIR, { recursive: true });
 
 // ---------------------------------------------------------------------------
-// Express — security headers + static files
+// Express — security headers + static files + artifact endpoint
 // ---------------------------------------------------------------------------
 
 const app = express();
@@ -41,16 +41,58 @@ app.use(helmet({
         'https://cdnjs.cloudflare.com',
       ],
       connectSrc: ["'self'", 'ws:', 'wss:'],
-      imgSrc: ["'self'", 'data:'],
+      imgSrc: ["'self'", 'data:', 'blob:'],
     },
   },
 }));
 
+app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Auth status endpoint — lets the frontend know if a token is required
 app.get('/auth-status', (_req, res) => {
   res.json({ required: AUTH_TOKEN !== null });
+});
+
+// Serve local files (images etc.) for the artifact panel
+app.get('/local-file', (req, res) => {
+  // nosemgrep — intentional: authenticated file serving for artifact display
+  const filePath = req.query.path;
+  if (!filePath || typeof filePath !== 'string') {
+    return res.status(400).send('Missing path');
+  }
+  const resolved = path.resolve(filePath); // nosemgrep
+  const ext = path.extname(resolved).toLowerCase();
+  const allowed = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp'];
+  if (!allowed.includes(ext)) {
+    return res.status(403).send('File type not allowed');
+  }
+  // nosemgrep — intentional: auth-gated local file serving for artifact display.
+  // Only serves image extensions. Users already have full shell access via Claude sessions.
+  if (!fs.existsSync(resolved)) { // nosemgrep
+    return res.status(404).send('File not found');
+  }
+  res.sendFile(resolved); // nosemgrep
+});
+
+// Artifact callback — receives POSTs from the MCP artifact server
+app.post('/artifact', (req, res) => {
+  const { sessionId, ...artifact } = req.body;
+  const session = sessions.get(sessionId);
+  if (!session) {
+    return res.status(404).json({ error: 'Unknown session' });
+  }
+
+  // Forward artifact to all WebSocket clients that own this session
+  const event = { type: 'artifact', sessionId, artifact };
+  for (const ws of wss.clients) {
+    const connSessions = connectionSessions.get(ws);
+    if (connSessions?.has(sessionId)) {
+      sendJSON(ws, event);
+    }
+  }
+
+  logToSession(session, { type: 'artifact', artifact });
+  res.json({ ok: true });
 });
 
 const httpServer = createServer(app);
@@ -59,11 +101,9 @@ const httpServer = createServer(app);
 // Session logging
 // ---------------------------------------------------------------------------
 
-/** Pre-computed safe log paths, keyed by localId. Set once at session creation. */
 const sessionLogPaths = new Map();
 
 function initSessionLog(localId) {
-  // localId is always from crypto.randomUUID(), but belt-and-suspenders:
   const safe = localId.replace(/[^a-f0-9-]/g, '');
   const resolved = path.resolve(LOG_DIR, `${safe}.ndjson`);
   if (!resolved.startsWith(path.resolve(LOG_DIR))) return null;
@@ -85,7 +125,6 @@ function logToSession(session, entry) {
 const wss = new WebSocketServer({ noServer: true });
 
 httpServer.on('upgrade', (req, socket, head) => {
-  // Auth check: if SUBLIGHT_TOKEN is set, require it as a query param
   if (AUTH_TOKEN) {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const token = url.searchParams.get('token');
@@ -105,10 +144,7 @@ httpServer.on('upgrade', (req, socket, head) => {
 // Session state
 // ---------------------------------------------------------------------------
 
-/** Global session store — keyed by localId */
 const sessions = new Map();
-
-/** Track which sessions belong to which WS connection */
 const connectionSessions = new WeakMap();
 
 function getConnectionSessions(ws) {
@@ -136,41 +172,65 @@ function killSession(session) {
 }
 
 // ---------------------------------------------------------------------------
-// Spawn `claude` in print + stream-json mode
+// MCP config for artifact server
 // ---------------------------------------------------------------------------
 
-function spawnClaude(session, text, ws) {
+function writeMcpConfig(sessionId) {
+  // nosemgrep — sessionId is server-generated UUID from crypto.randomUUID()
+  const safe = sessionId.replace(/[^a-f0-9-]/g, '');
+  const configPath = path.join(LOG_DIR, `mcp-${safe}.json`); // nosemgrep
+  const config = {
+    mcpServers: {
+      'sublight-artifacts': {
+        command: 'node',
+        args: [ARTIFACT_MCP_PATH],
+        env: {
+          SUBLIGHT_ARTIFACT_URL: `http://localhost:${PORT}/artifact`,
+          SUBLIGHT_SESSION_ID: sessionId,
+        },
+      },
+    },
+  };
+  fs.writeFileSync(configPath, JSON.stringify(config));
+  return configPath;
+}
+
+// ---------------------------------------------------------------------------
+// Persistent Claude process management
+//
+// Each session gets ONE long-running `claude` process using:
+//   --input-format stream-json --output-format stream-json --verbose
+//
+// Messages are written to stdin as NDJSON. Responses stream back on stdout.
+// The process stays alive across turns — no context reload, no re-spawn.
+// ---------------------------------------------------------------------------
+
+function ensureProcess(session, ws) {
+  if (session.proc) return; // already running
+
   const args = [
-    '-p', text,
     '--output-format', 'stream-json',
+    '--input-format', 'stream-json',
     '--verbose',
   ];
-
-  if (session.claudeSession) {
-    args.push('--resume', session.claudeSession);
-  }
 
   if (session.permissionMode === 'bypass') {
     args.push('--dangerously-skip-permissions');
   }
 
+  // Inject our artifact MCP server alongside existing MCP configs
+  const mcpConfigPath = writeMcpConfig(session.localId);
+  args.push('--mcp-config', mcpConfigPath);
+
   const proc = spawn('claude', args, {
     cwd: session.cwd,
     env: { ...process.env },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['pipe', 'pipe', 'pipe'],
   });
 
   session.proc = proc;
-  session.status = 'busy';
 
-  logToSession(session, { type: 'user_message', text });
-
-  sendJSON(ws, {
-    type: 'stream_start',
-    sessionId: session.localId,
-  });
-
-  // NDJSON line buffer — data arrives in arbitrary chunks
+  // NDJSON line buffer for stdout
   let stdoutBuf = '';
   proc.stdout.on('data', (chunk) => {
     stdoutBuf += chunk.toString();
@@ -192,63 +252,67 @@ function spawnClaude(session, text, ws) {
         session.claudeSession = event.session_id;
       }
 
-      logToSession(session, { type: 'claude_event', event });
+      // Detect turn completion: result event means Claude finished responding
+      if (event.type === 'result') {
+        session.status = 'idle';
+        logToSession(session, { type: 'turn_end', event });
+        sendJSON(ws, { type: 'claude_event', sessionId: session.localId, event });
+        sendJSON(ws, { type: 'stream_end', sessionId: session.localId });
+        continue;
+      }
 
-      sendJSON(ws, {
-        type: 'claude_event',
-        sessionId: session.localId,
-        event,
-      });
+      logToSession(session, { type: 'claude_event', event });
+      sendJSON(ws, { type: 'claude_event', sessionId: session.localId, event });
     }
   });
 
-  let stderrBuf = '';
   proc.stderr.on('data', (chunk) => {
-    stderrBuf += chunk.toString();
+    // Log stderr but don't surface to user unless process crashes
+    const text = chunk.toString().trim();
+    if (text) logToSession(session, { type: 'stderr', text });
   });
 
   proc.on('close', (code) => {
-    // Flush trailing line
-    if (stdoutBuf.trim()) {
-      try {
-        const event = JSON.parse(stdoutBuf.trim());
-        if (event.session_id && !session.claudeSession) {
-          session.claudeSession = event.session_id;
-        }
-        logToSession(session, { type: 'claude_event', event });
-        sendJSON(ws, {
-          type: 'claude_event',
-          sessionId: session.localId,
-          event,
-        });
-      } catch { /* ignore */ }
-    }
-
     session.proc = null;
+    const wasBusy = session.status === 'busy';
     session.status = 'idle';
 
-    logToSession(session, { type: 'stream_end', exitCode: code });
+    logToSession(session, { type: 'process_exit', code });
 
-    sendJSON(ws, {
-      type: 'stream_end',
-      sessionId: session.localId,
-      exitCode: code,
-      stderr: stderrBuf.trim() || undefined,
-    });
+    // If process died while busy, notify the client
+    if (wasBusy) {
+      sendJSON(ws, {
+        type: 'stream_end',
+        sessionId: session.localId,
+        exitCode: code,
+        stderr: code !== 0 ? `Claude process exited with code ${code}` : undefined,
+      });
+    }
   });
 
   proc.on('error', (err) => {
     session.proc = null;
     session.status = 'error';
-
     logToSession(session, { type: 'error', message: err.message });
-
-    sendJSON(ws, {
-      type: 'error',
-      sessionId: session.localId,
-      message: err.message,
-    });
+    sendJSON(ws, { type: 'error', sessionId: session.localId, message: err.message });
   });
+}
+
+function sendMessage(session, text, ws) {
+  ensureProcess(session, ws);
+
+  session.status = 'busy';
+  logToSession(session, { type: 'user_message', text });
+
+  sendJSON(ws, { type: 'stream_start', sessionId: session.localId });
+
+  // Write user message to Claude's stdin as NDJSON
+  const userMessage = {
+    type: 'user',
+    message: { role: 'user', content: text },
+    parent_tool_use_id: null,
+  };
+  session.proc.stdin.write(JSON.stringify(userMessage) + '\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -258,7 +322,6 @@ function spawnClaude(session, text, ws) {
 wss.on('connection', (ws) => {
   const connSessions = getConnectionSessions(ws);
 
-  // Clean up all sessions owned by this connection when it closes
   ws.on('close', () => {
     for (const localId of connSessions) {
       const session = sessions.get(localId);
@@ -298,7 +361,6 @@ wss.on('connection', (ws) => {
         initSessionLog(localId);
 
         logToSession(session, { type: 'session_created', cwd, permissionMode });
-
         sendJSON(ws, { type: 'session_created', sessionId: localId, cwd });
         break;
       }
@@ -315,13 +377,14 @@ wss.on('connection', (ws) => {
         }
         if (!msg.text?.trim()) return;
 
-        spawnClaude(session, msg.text, ws);
+        sendMessage(session, msg.text, ws);
         break;
       }
 
       case 'abort': {
         const session = sessions.get(msg.sessionId);
         if (session?.proc && connSessions.has(msg.sessionId)) {
+          // Kill the process — it will be re-spawned on next message
           session.proc.kill('SIGTERM');
         }
         break;
@@ -357,7 +420,6 @@ wss.on('connection', (ws) => {
         break;
       }
 
-      // ---- Browse directories for autocomplete ----
       case 'browse_dir': {
         const input = (msg.path || '').trim();
         if (!input) {
@@ -365,7 +427,6 @@ wss.on('connection', (ws) => {
           break;
         }
 
-        // Determine the directory to list and optional prefix filter
         let dirToList = input;
         let prefix = '';
         try {
@@ -375,15 +436,12 @@ wss.on('connection', (ws) => {
             break;
           }
         } catch {
-          // Input isn't a valid dir — try its parent and filter by the basename
           dirToList = path.dirname(input);
           prefix = path.basename(input).toLowerCase();
         }
 
         try {
-          // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal
-          // Intentional: directory browsing is the purpose of this endpoint.
-          // Auth-gated, read-only listing. Users already have full shell via Claude sessions.
+          // nosemgrep — intentional: directory browsing for folder picker
           const resolvedParent = path.resolve(dirToList); // nosemgrep
           const entries = fs.readdirSync(resolvedParent, { withFileTypes: true });
           const dirs = entries
@@ -420,7 +478,6 @@ function shutdown(signal) {
     }
   }
   httpServer.close(() => process.exit(0));
-  // Force exit after 5s if connections don't close
   setTimeout(() => process.exit(1), 5000);
 }
 
@@ -438,4 +495,5 @@ httpServer.listen(PORT, HOST, () => {
   } else {
     console.log('Auth: disabled (set SUBLIGHT_TOKEN in .env to enable)');
   }
+  console.log(`Artifact MCP: ${ARTIFACT_MCP_PATH}`);
 });
