@@ -419,6 +419,17 @@ html, body {
 
 .log-actions button:hover { background: var(--bg-hover); }
 
+.log-tag {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  align-self: center;
+}
+
 .danger-btn {
   color: var(--error) !important;
   border-color: color-mix(in srgb, var(--error) 30%, transparent) !important;

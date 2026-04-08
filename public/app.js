@@ -323,6 +323,19 @@ async function loadLogsList() {
       const actions = document.createElement('div');
       actions.className = 'log-actions';
 
+      if (log.resumable) {
+        const resumeBtn = document.createElement('button');
+        resumeBtn.textContent = 'Resume';
+        resumeBtn.title = 'Reopen this session with Claude --resume';
+        resumeBtn.addEventListener('click', (e) => { e.stopPropagation(); resumeLog(log); });
+        actions.appendChild(resumeBtn);
+      } else if (log.live) {
+        const liveTag = document.createElement('span');
+        liveTag.className = 'log-tag';
+        liveTag.textContent = 'live';
+        actions.appendChild(liveTag);
+      }
+
       const viewBtn = document.createElement('button');
       viewBtn.textContent = 'View';
       viewBtn.title = 'View log contents';
@@ -412,6 +425,109 @@ async function viewLog(log) {
     $logsViewer.classList.remove('hidden');
   } catch (err) {
     console.error('Failed to load log:', err);
+  }
+}
+
+async function resumeLog(log) {
+  // Send the resume request. session_restored comes back on the WS.
+  // The chat history is rehydrated there from /api/logs/:id.
+  send({ type: 'resume_session', logId: log.id });
+  $logsDialog.close();
+}
+
+/**
+ * Walk the NDJSON log for a session and rebuild its in-memory messages +
+ * artifacts. Mirrors the live handleClaudeEvent flow but writes directly to
+ * session.messages so it works regardless of which session is currently active.
+ */
+async function rehydrateSessionFromLog(sessionId) {
+  const res = await authFetch(`/api/logs/${sessionId}`);
+  if (!res.ok) throw new Error(`log fetch failed: ${res.status}`);
+  const text = await res.text();
+  const session = state.sessions.get(sessionId);
+  if (!session) return;
+
+  let pendingAssistant = '';
+  const flushAssistant = () => {
+    if (pendingAssistant) {
+      session.messages.push({ role: 'assistant', text: pendingAssistant });
+      pendingAssistant = '';
+    }
+  };
+
+  for (const line of text.split('\n')) {
+    if (!line) continue;
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+
+    if (entry.type === 'user_message') {
+      flushAssistant();
+      session.messages.push({ role: 'user', text: entry.text, attachments: null });
+      continue;
+    }
+
+    if (entry.type === 'error' && entry.message) {
+      flushAssistant();
+      session.messages.push({ role: 'error', text: entry.message });
+      continue;
+    }
+
+    if (entry.type === 'artifact' && entry.artifact) {
+      const a = entry.artifact;
+      // Skip transient/control artifacts that don't belong in the history panel.
+      const transient = ['notification', 'open_url', 'progress', 'set_session_name', 'pin'];
+      if (transient.includes(a.type)) {
+        if (a.type === 'set_session_name' && a.name) session.name = a.name;
+        continue;
+      }
+      if (!state.artifacts.has(sessionId)) state.artifacts.set(sessionId, []);
+      state.artifacts.get(sessionId).push(a);
+      continue;
+    }
+
+    if (entry.type !== 'claude_event' || !entry.event) continue;
+    const ev = entry.event;
+
+    if (ev.type === 'assistant') {
+      const content = ev.message?.content;
+      if (!Array.isArray(content)) continue;
+      for (const block of content) {
+        if (block.type === 'text' && block.text) {
+          pendingAssistant += block.text;
+        } else if (block.type === 'thinking' && block.thinking) {
+          flushAssistant();
+          session.messages.push({ role: 'thinking', text: block.thinking });
+        } else if (block.type === 'tool_use') {
+          flushAssistant();
+          session.messages.push({
+            role: 'tool',
+            name: block.name,
+            input: block.input,
+            result: null,
+            id: block.id,
+          });
+        } else if (block.type === 'tool_result') {
+          const existing = session.messages.find((m) => m.id === block.tool_use_id);
+          if (existing) existing.result = extractToolResultText(block);
+        }
+      }
+    } else if (ev.type === 'result') {
+      if (pendingAssistant) {
+        flushAssistant();
+      } else if (ev.subtype === 'success' && ev.result) {
+        session.messages.push({ role: 'assistant', text: ev.result });
+      }
+      if (ev.total_cost_usd != null) session.costUsd = ev.total_cost_usd;
+    }
+  }
+
+  flushAssistant();
+
+  if (state.activeId === sessionId) {
+    renderChat();
+    renderArtifacts();
+    updateStatusUI();
+    renderSidebar();
   }
 }
 
@@ -517,6 +633,30 @@ function handleServerMessage(msg) {
       state.sessions.set(msg.sessionId, session);
       switchSession(msg.sessionId);
       renderSidebar();
+      break;
+    }
+
+    case 'session_restored': {
+      const session = {
+        id: msg.sessionId,
+        cwd: msg.cwd,
+        name: msg.name || shortCwd(msg.cwd),
+        messages: [],
+        status: 'idle',
+        streamingEl: null,
+        streamingText: '',
+        pendingToolCards: new Map(),
+        costUsd: null,
+      };
+      state.sessions.set(msg.sessionId, session);
+      switchSession(msg.sessionId);
+      renderSidebar();
+      // Pull the NDJSON log and replay it into the chat/artifact state. This
+      // reuses the already-authenticated logs endpoint — no new protocol.
+      rehydrateSessionFromLog(msg.sessionId).catch((err) => {
+        console.error('Failed to rehydrate session', err);
+        appendError(session, `Failed to rehydrate chat history: ${err.message}`);
+      });
       break;
     }
 

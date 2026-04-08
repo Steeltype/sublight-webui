@@ -192,7 +192,7 @@ app.get('/auth-status', (_req, res) => {
 // Log management API
 // ---------------------------------------------------------------------------
 
-/** Read first N lines of a log file and extract metadata. */
+/** Read a log file and extract metadata used for the logs list and resume flow. */
 function extractLogMeta(logPath) {
   try {
     const content = fs.readFileSync(logPath, 'utf-8');
@@ -202,38 +202,44 @@ function extractLogMeta(logPath) {
     let sessionName = null;
     let cwd = null;
     let permissionMode = null;
+    let claudeSessionId = null;
     let messageCount = 0;
+    let closed = false;
 
-    for (const line of lines.slice(0, 50)) {
-      try {
-        const entry = JSON.parse(line);
-        if (entry.type === 'session_created') {
-          cwd = entry.cwd;
-          permissionMode = entry.permissionMode;
-        }
-        if (entry.type === 'artifact' && entry.artifact?.type === 'set_session_name') {
-          sessionName = entry.artifact.name;
-        }
-        if (entry.type === 'user_message') messageCount++;
-      } catch { continue; }
-    }
+    // Single pass through the whole file — cheap enough for NDJSON logs and
+    // lets us catch the latest session_id (Claude can rotate it mid-run) and
+    // any later set_session_name artifact.
+    for (const line of lines) {
+      let entry;
+      try { entry = JSON.parse(line); } catch { continue; }
 
-    // Count remaining user messages if file is longer
-    if (lines.length > 50) {
-      for (const line of lines.slice(50)) {
-        if (line.includes('"user_message"')) messageCount++;
+      if (entry.type === 'session_created') {
+        cwd = entry.cwd;
+        permissionMode = entry.permissionMode;
+      } else if (entry.type === 'user_message') {
+        messageCount++;
+      } else if (entry.type === 'artifact' && entry.artifact?.type === 'set_session_name') {
+        sessionName = entry.artifact.name;
+      } else if (entry.type === 'claude_event' && entry.event?.session_id) {
+        claudeSessionId = entry.event.session_id;
+      } else if (entry.type === 'session_closed_by_user') {
+        closed = true;
       }
     }
 
-    const firstLine = JSON.parse(lines[0]);
-    const lastLine = JSON.parse(lines[lines.length - 1]);
+    let startedAt = null;
+    let endedAt = null;
+    try { startedAt = JSON.parse(lines[0]).ts; } catch {}
+    try { endedAt = JSON.parse(lines[lines.length - 1]).ts; } catch {}
 
     return {
-      startedAt: firstLine.ts,
-      endedAt: lastLine.ts,
+      startedAt,
+      endedAt,
       sessionName,
       cwd,
       permissionMode,
+      claudeSessionId,
+      closed,
       messageCount,
       entryCount: lines.length,
     };
@@ -253,11 +259,15 @@ app.get('/api/logs', (req, res) => {
         const stat = fs.statSync(full);
         const id = f.replace('.ndjson', '');
         const meta = extractLogMeta(full);
+        const live = sessions.has(id);
+        const resumable = !!(meta && meta.claudeSessionId && !meta.closed && !live);
         return {
           id,
           filename: f,
           size: stat.size,
           modifiedAt: stat.mtime.toISOString(),
+          live,
+          resumable,
           ...meta,
         };
       })
@@ -544,6 +554,14 @@ function ensureProcess(session, ws) {
     '--verbose',
   ];
 
+  // On resume we ask Claude to pick up its prior CLI session. The session_id
+  // is stored in `session.resumeFromClaudeSession` by the resume handler and
+  // cleared after the first spawn so reconnects don't keep re-resuming.
+  if (session.resumeFromClaudeSession) {
+    args.push('--resume', session.resumeFromClaudeSession);
+    session.resumeFromClaudeSession = null;
+  }
+
   if (session.permissionMode === 'bypass') {
     args.push('--dangerously-skip-permissions');
   }
@@ -755,6 +773,68 @@ wss.on('connection', (ws) => {
           // Kill the process — it will be re-spawned on next message
           session.proc.kill('SIGTERM');
         }
+        break;
+      }
+
+      case 'resume_session': {
+        const rawId = String(msg.logId || '');
+        const safe = rawId.replace(/[^a-f0-9-]/g, '');
+        if (!safe || safe !== rawId) {
+          sendJSON(ws, { type: 'error', message: 'Invalid log id' });
+          break;
+        }
+        if (sessions.has(safe)) {
+          sendJSON(ws, { type: 'error', message: 'Session is already live — cannot resume' });
+          break;
+        }
+        if (sessions.size >= settings.security.maxSessions) {
+          sendJSON(ws, { type: 'error', message: `Session limit reached (max ${settings.security.maxSessions})` });
+          break;
+        }
+        const logPath = path.resolve(LOG_DIR, `${safe}.ndjson`);
+        if (!logPath.startsWith(path.resolve(LOG_DIR)) || !fs.existsSync(logPath)) {
+          sendJSON(ws, { type: 'error', message: 'Log not found' });
+          break;
+        }
+        const meta = extractLogMeta(logPath);
+        if (!meta || !meta.claudeSessionId) {
+          sendJSON(ws, { type: 'error', message: 'Log has no resumable Claude session id' });
+          break;
+        }
+        if (meta.closed) {
+          sendJSON(ws, { type: 'error', message: 'Log is marked closed — cannot resume' });
+          break;
+        }
+        if (!meta.cwd || !fs.existsSync(meta.cwd)) {
+          sendJSON(ws, { type: 'error', message: `Session cwd no longer exists: ${meta.cwd || '(unknown)'}` });
+          break;
+        }
+
+        const session = {
+          localId: safe,
+          claudeSession: meta.claudeSessionId,
+          resumeFromClaudeSession: meta.claudeSessionId,
+          proc: null,
+          cwd: meta.cwd,
+          status: 'idle',
+          name: meta.sessionName || null,
+          permissionMode: meta.permissionMode || settings.security.defaultPermissionMode,
+          artifactSecret: crypto.randomUUID(),
+          mcpConfigPath: null,
+        };
+        sessions.set(safe, session);
+        connSessions.add(safe);
+        // Re-open the log path so new events append to the existing file.
+        initSessionLog(safe);
+        logToSession(session, { type: 'session_resumed', cwd: meta.cwd, permissionMode: session.permissionMode });
+
+        sendJSON(ws, {
+          type: 'session_restored',
+          sessionId: safe,
+          cwd: meta.cwd,
+          name: session.name,
+          permissionMode: session.permissionMode,
+        });
         break;
       }
 
