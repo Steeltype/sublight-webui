@@ -50,6 +50,7 @@ const $emptyState    = document.getElementById('empty-state');
 const $chatArea      = document.getElementById('chat-area');
 const $chatTitle     = document.getElementById('chat-title');
 const $chatStatus    = document.getElementById('chat-status');
+const $chatRuntime   = document.getElementById('chat-runtime');
 const $messages      = document.getElementById('messages');
 const $inputBar      = document.getElementById('input-bar');
 const $promptInput   = document.getElementById('prompt-input');
@@ -834,11 +835,28 @@ function handleServerMessage(msg) {
 function handleClaudeEvent(session, event) {
   const isActive = session.id === state.activeId;
 
+  // Track whether the current event came from a subagent (Task tool child)
+  // so rendering helpers can mark it visually. Null/undefined means top-level.
+  session.currentParentToolUseId = event.parent_tool_use_id || null;
+
   switch (event.type) {
     case 'system':
       if (event.subtype === 'init') {
         session.name = shortCwd(event.cwd || session.cwd);
-        if (isActive) $chatTitle.textContent = session.name;
+        // Capture the Claude runtime state from the init event so we can
+        // surface it in the chat header: model, MCP servers, tool/skill counts.
+        session.runtime = {
+          model: event.model || null,
+          mcpServers: Array.isArray(event.mcp_servers) ? event.mcp_servers : [],
+          toolCount: Array.isArray(event.tools) ? event.tools.length : 0,
+          slashCommandCount: Array.isArray(event.slash_commands) ? event.slash_commands.length : 0,
+          skillCount: Array.isArray(event.skills) ? event.skills.length : 0,
+          permissionMode: event.permissionMode || null,
+        };
+        if (isActive) {
+          $chatTitle.textContent = session.name;
+          updateRuntimeStrip(session);
+        }
         renderSidebar();
       }
       break;
@@ -921,6 +939,7 @@ function ensureStreamingEl(session) {
   if (session.streamingEl) return;
   const el = document.createElement('div');
   el.className = 'msg msg-assistant streaming';
+  if (session.currentParentToolUseId) el.classList.add('from-subagent');
   $messages.appendChild(el);
   session.streamingEl = el;
   scrollToBottom();
@@ -947,6 +966,7 @@ function finalizeStreaming(session) {
 function appendThinking(session, text) {
   const details = document.createElement('details');
   details.className = 'thinking-card';
+  if (session.currentParentToolUseId) details.classList.add('from-subagent');
   const summary = document.createElement('summary');
   summary.textContent = 'Thinking';
   details.appendChild(summary);
@@ -966,6 +986,10 @@ function appendThinking(session, text) {
 function appendToolUse(session, block) {
   const details = document.createElement('details');
   details.className = 'tool-card';
+  if (session.currentParentToolUseId) details.classList.add('from-subagent');
+  // A Task tool launches a subagent. Mark the card so the user sees it's a
+  // "parent" of any nested events that follow.
+  if (block.name === 'Task') details.classList.add('task-parent');
   const summary = document.createElement('summary');
   summary.textContent = block.name;
   details.appendChild(summary);
@@ -1087,6 +1111,7 @@ function renderChat() {
   $chatArea.classList.remove('hidden');
   $chatTitle.textContent = session.name || 'Session';
   updateStatusUI();
+  updateRuntimeStrip(session);
 
   $messages.replaceChildren();
   for (const msg of session.messages) {
@@ -1156,6 +1181,38 @@ function renderChat() {
 
   scrollToBottom();
   $promptInput.focus();
+}
+
+function updateRuntimeStrip(session) {
+  if (!session?.runtime) {
+    $chatRuntime.classList.add('hidden');
+    $chatRuntime.textContent = '';
+    $chatRuntime.title = '';
+    return;
+  }
+  const { model, mcpServers, toolCount, slashCommandCount, skillCount } = session.runtime;
+  const connected = mcpServers.filter((s) => s.status === 'connected').length;
+  const failed = mcpServers.filter((s) => s.status === 'failed').length;
+  const parts = [];
+  if (model) parts.push(model);
+  if (mcpServers.length) parts.push(`MCP ${connected}/${mcpServers.length}`);
+  if (toolCount) parts.push(`${toolCount} tools`);
+  $chatRuntime.textContent = parts.join(' · ');
+  // Tooltip: full server list with status so users can audit on hover.
+  const lines = [];
+  if (model) lines.push(`Model: ${model}`);
+  lines.push(`Tools: ${toolCount}  ·  Slash: ${slashCommandCount}  ·  Skills: ${skillCount}`);
+  if (mcpServers.length) {
+    lines.push('');
+    lines.push('MCP servers:');
+    for (const s of mcpServers) {
+      lines.push(`  ${s.status === 'connected' ? '✓' : '✗'} ${s.name} (${s.status})`);
+    }
+  }
+  if (failed > 0) $chatRuntime.classList.add('has-failed');
+  else $chatRuntime.classList.remove('has-failed');
+  $chatRuntime.title = lines.join('\n');
+  $chatRuntime.classList.remove('hidden');
 }
 
 function updateStatusUI() {

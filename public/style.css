@@ -684,6 +684,47 @@ html, body {
   flex: 1;
 }
 
+#chat-runtime {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: help;
+  white-space: nowrap;
+  margin-right: 8px;
+}
+
+#chat-runtime.has-failed {
+  border-color: color-mix(in srgb, var(--error) 40%, var(--border));
+  color: color-mix(in srgb, var(--error) 70%, var(--text-dim));
+}
+
+/* Subagent nesting — events that came from a Task child are visually inset. */
+.from-subagent {
+  margin-left: 24px !important;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 40%, transparent) !important;
+  padding-left: 10px !important;
+  position: relative;
+}
+
+.from-subagent::before {
+  content: '↳ subagent';
+  position: absolute;
+  left: 10px;
+  top: -8px;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: color-mix(in srgb, var(--accent) 70%, transparent);
+  background: var(--bg);
+  padding: 0 4px;
+}
+
+.tool-card.task-parent {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+
 #chat-actions {
   display: flex;
   gap: 6px;
