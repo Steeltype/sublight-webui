@@ -182,6 +182,7 @@
           <div class="token-row compact">
             <code id="settings-token"></code>
             <button type="button" id="btn-copy-settings-token">Copy</button>
+            <button type="button" id="btn-regen-token" class="danger-btn" title="Generate a new token and invalidate the current one">Regenerate</button>
           </div>
         </div>
         <div class="setting-inline">
@@ -198,6 +199,14 @@
         <div class="setting-inline">
           <label for="setting-max-sessions">Max concurrent sessions</label>
           <input type="number" id="setting-max-sessions" min="1" max="50">
+        </div>
+        <div class="setting-inline">
+          <label for="setting-idle-timeout">Idle session timeout (minutes, 0 = off)</label>
+          <input type="number" id="setting-idle-timeout" min="0" max="10080">
+        </div>
+        <div class="setting-inline">
+          <label for="setting-rate-limit">Message rate limit (per min, 0 = off)</label>
+          <input type="number" id="setting-rate-limit" min="0" max="10000">
         </div>
       </section>
 

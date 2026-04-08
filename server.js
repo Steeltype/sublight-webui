@@ -32,6 +32,11 @@ const DEFAULT_SETTINGS = {
     serveSvg: false,
     maxSessions: 10,
     defaultPermissionMode: 'default',
+    // Kill Claude subprocesses that haven't had activity in this many minutes.
+    // 0 disables. Resuming the session via the UI re-spawns on next message.
+    idleTimeoutMinutes: 120,
+    // Max user messages per minute per WebSocket connection. 0 disables.
+    messageRateLimitPerMin: 30,
   },
 };
 
@@ -182,6 +187,23 @@ app.post('/api/settings', (req, res) => {
     settings = saveSettings({ security: req.body.security });
   }
   res.json({ ok: true, security: settings.security });
+});
+
+/**
+ * Regenerate the auth token. Persists to settings.json and takes effect on
+ * next server restart — we deliberately do not mutate AUTH_TOKEN at runtime
+ * because existing connections would be orphaned mid-conversation.
+ */
+app.post('/api/settings/regenerate-token', (req, res) => {
+  if (!httpAuth(req, res)) return;
+  if (process.env.SUBLIGHT_TOKEN) {
+    return res.status(409).json({
+      error: 'Token is pinned by the SUBLIGHT_TOKEN environment variable. Remove it from .env to regenerate here.',
+    });
+  }
+  const newToken = crypto.randomUUID();
+  settings = saveSettings({ token: newToken });
+  res.json({ ok: true, token: newToken, restartRequired: true });
 });
 
 app.get('/auth-status', (_req, res) => {
@@ -512,6 +534,8 @@ httpServer.on('upgrade', (req, socket, head) => {
 
 const sessions = new Map();
 const connectionSessions = new WeakMap();
+/** Per-connection message timestamps for rate limiting (sliding 60s window). */
+const connectionMessageTimestamps = new WeakMap();
 
 function getConnectionSessions(ws) {
   let set = connectionSessions.get(ws);
@@ -644,6 +668,7 @@ function ensureProcess(session, ws) {
       // Detect turn completion: result event means Claude finished responding
       if (event.type === 'result') {
         session.status = 'idle';
+        session.lastActiveAt = Date.now();
         logToSession(session, { type: 'turn_end', event });
         sendJSON(ws, { type: 'claude_event', sessionId: session.localId, event });
         sendJSON(ws, { type: 'stream_end', sessionId: session.localId });
@@ -703,6 +728,7 @@ function sendMessage(session, text, ws, attachments) {
   }
 
   session.status = 'busy';
+  session.lastActiveAt = Date.now();
   logToSession(session, { type: 'user_message', text, hasAttachments: !!attachments?.length });
 
   sendJSON(ws, { type: 'stream_start', sessionId: session.localId });
@@ -777,6 +803,7 @@ wss.on('connection', (ws) => {
           permissionMode,
           artifactSecret: crypto.randomUUID(),
           mcpConfigPath: null,
+          lastActiveAt: Date.now(),
         };
         sessions.set(localId, session);
         connSessions.add(localId);
@@ -798,6 +825,31 @@ wss.on('connection', (ws) => {
           return;
         }
         if (!msg.text?.trim()) return;
+
+        // Sliding-window rate limit per connection — drop messages once the
+        // user trips it and tell them why. 0 disables.
+        const limit = settings.security.messageRateLimitPerMin || 0;
+        if (limit > 0) {
+          const now = Date.now();
+          const windowStart = now - 60_000;
+          let stamps = connectionMessageTimestamps.get(ws);
+          if (!stamps) {
+            stamps = [];
+            connectionMessageTimestamps.set(ws, stamps);
+          }
+          // Drop stamps that fell out of the window.
+          while (stamps.length && stamps[0] < windowStart) stamps.shift();
+          if (stamps.length >= limit) {
+            const retryMs = stamps[0] + 60_000 - now;
+            sendJSON(ws, {
+              type: 'error',
+              sessionId: msg.sessionId,
+              message: `Rate limit: ${limit} messages/min. Retry in ${Math.ceil(retryMs / 1000)}s.`,
+            });
+            return;
+          }
+          stamps.push(now);
+        }
 
         sendMessage(session, msg.text, ws, msg.attachments);
         break;
@@ -857,6 +909,7 @@ wss.on('connection', (ws) => {
           permissionMode: meta.permissionMode || settings.security.defaultPermissionMode,
           artifactSecret: crypto.randomUUID(),
           mcpConfigPath: null,
+          lastActiveAt: Date.now(),
         };
         sessions.set(safe, session);
         connSessions.add(safe);
@@ -974,6 +1027,43 @@ wss.on('connection', (ws) => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Idle session sweeper — reclaims Claude subprocesses that have gone quiet.
+// A swept session is killed (process only) and removed from memory. Its log
+// stays on disk and the Resume flow can bring it back.
+// ---------------------------------------------------------------------------
+
+const IDLE_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+
+setInterval(() => {
+  const timeoutMinutes = settings.security.idleTimeoutMinutes || 0;
+  if (timeoutMinutes <= 0) return;
+  const cutoff = Date.now() - timeoutMinutes * 60 * 1000;
+
+  for (const session of [...sessions.values()]) {
+    // Never sweep a session that's still actively streaming a response.
+    if (session.status === 'busy') continue;
+    if (!session.lastActiveAt || session.lastActiveAt > cutoff) continue;
+
+    logToSession(session, {
+      type: 'idle_sweep',
+      idleForMs: Date.now() - session.lastActiveAt,
+      timeoutMinutes,
+    });
+
+    // Notify any connections that still own this session, then tear it down.
+    const closeEvent = { type: 'session_closed', sessionId: session.localId, reason: 'idle_timeout' };
+    for (const ws of wss.clients) {
+      const connSet = connectionSessions.get(ws);
+      if (connSet?.has(session.localId)) {
+        sendJSON(ws, closeEvent);
+        connSet.delete(session.localId);
+      }
+    }
+    killSession(session);
+  }
+}, IDLE_SWEEP_INTERVAL_MS).unref();
 
 // ---------------------------------------------------------------------------
 // Graceful shutdown — kill all child processes

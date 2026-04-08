@@ -208,6 +208,8 @@ document.getElementById('btn-settings').addEventListener('click', async () => {
     document.getElementById('setting-no-svg').checked = !data.security.serveSvg;
     document.getElementById('setting-default-perms').checked = data.security.defaultPermissionMode === 'default';
     document.getElementById('setting-max-sessions').value = data.security.maxSessions;
+    document.getElementById('setting-idle-timeout').value = data.security.idleTimeoutMinutes ?? 120;
+    document.getElementById('setting-rate-limit').value = data.security.messageRateLimitPerMin ?? 30;
 
     $settingsDialog.showModal();
   } catch (err) {
@@ -222,17 +224,42 @@ document.getElementById('btn-copy-settings-token').addEventListener('click', () 
   setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
 });
 
+document.getElementById('btn-regen-token').addEventListener('click', async () => {
+  const ok = await confirm(
+    'Regenerate the access token?\n\n' +
+    'The new token will be saved to settings.json but does NOT take effect until the server restarts. ' +
+    'After restart, current browser tabs will be logged out and must use the new token.'
+  );
+  if (!ok) return;
+  try {
+    const res = await authFetch('/api/settings/regenerate-token', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast(data.error || 'Failed to regenerate token');
+      return;
+    }
+    document.getElementById('settings-token').textContent = data.token;
+    showToast('Token regenerated — restart the server for it to take effect');
+  } catch (err) {
+    console.error('Failed to regenerate token:', err);
+  }
+});
+
 document.getElementById('settings-cancel').addEventListener('click', () => {
   $settingsDialog.close();
 });
 
 document.getElementById('settings-form').addEventListener('submit', async (e) => {
   e.preventDefault();
+  const idleTimeoutRaw = parseInt(document.getElementById('setting-idle-timeout').value, 10);
+  const rateLimitRaw = parseInt(document.getElementById('setting-rate-limit').value, 10);
   const security = {
     scopeFilesToSession: document.getElementById('setting-scope-files').checked,
     serveSvg: !document.getElementById('setting-no-svg').checked,
     maxSessions: parseInt(document.getElementById('setting-max-sessions').value) || 10,
     defaultPermissionMode: document.getElementById('setting-default-perms').checked ? 'default' : 'bypass',
+    idleTimeoutMinutes: Number.isFinite(idleTimeoutRaw) && idleTimeoutRaw >= 0 ? idleTimeoutRaw : 120,
+    messageRateLimitPerMin: Number.isFinite(rateLimitRaw) && rateLimitRaw >= 0 ? rateLimitRaw : 30,
   };
 
   try {
@@ -1987,5 +2014,48 @@ async function boot() {
     connect();
   }
 }
+
+// ---------------------------------------------------------------------------
+// Global keyboard shortcuts
+// ---------------------------------------------------------------------------
+//
+// - Ctrl/Cmd+N        new session dialog
+// - Ctrl/Cmd+/        show shortcut hint toast
+// - Escape            close the top open <dialog>, or focus the composer
+//
+// We do NOT hijack shortcuts when the user is typing into the composer or
+// into a dialog input, unless it's a modifier combo we explicitly own.
+
+document.addEventListener('keydown', (e) => {
+  const mod = e.ctrlKey || e.metaKey;
+  const target = e.target;
+  const typingInField =
+    target instanceof HTMLElement &&
+    (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+
+  if (mod && (e.key === 'n' || e.key === 'N')) {
+    e.preventDefault();
+    openNewSessionDialog();
+    return;
+  }
+
+  if (mod && e.key === '/') {
+    e.preventDefault();
+    showToast('Shortcuts: Ctrl+N new · Ctrl+Enter send · Esc focus composer');
+    return;
+  }
+
+  if (e.key === 'Escape') {
+    const openDialog = document.querySelector('dialog[open]');
+    if (openDialog) {
+      openDialog.close();
+      return;
+    }
+    if (!typingInField && $promptInput && !$promptInput.disabled) {
+      e.preventDefault();
+      $promptInput.focus();
+    }
+  }
+});
 
 boot();
