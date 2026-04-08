@@ -145,7 +145,9 @@ function showSetupScreen(token, securityDefaults) {
   $setupScreen.classList.remove('hidden');
   $appShell.classList.add('hidden');
   $authScreen.classList.add('hidden');
-  $setupToken.textContent = token;
+  $setupToken.textContent = token || 'See server console — token is only shown on the machine running the server.';
+  const copyBtn = document.getElementById('btn-copy-setup-token');
+  if (copyBtn) copyBtn.style.display = token ? '' : 'none';
 
   document.getElementById('setup-scope-files').checked = securityDefaults.scopeFilesToSession;
   document.getElementById('setup-no-svg').checked = !securityDefaults.serveSvg;
@@ -577,6 +579,19 @@ function handleServerMessage(msg) {
     case 'defaults': {
       state.defaultCwd = msg.cwd || '';
       state.defaultPermissionMode = msg.defaultPermissionMode || 'default';
+      break;
+    }
+
+    case 'dir_listing': {
+      // Folder autocomplete for the new-session dialog. Helpers are defined
+      // later in the file but exist by the time this runs (runtime-resolved).
+      const input = $dialogCwd.value;
+      const local = buildLocalSuggestions(input);
+      const localPaths = new Set(local.map((i) => i.path));
+      const fsEntries = (msg.entries || [])
+        .filter((p) => !localPaths.has(p))
+        .map((p) => ({ path: p, tag: null }));
+      showSuggestions([...local, ...fsEntries].slice(0, 15));
       break;
     }
 
@@ -1570,21 +1585,8 @@ function requestBrowse(input) {
   send({ type: 'browse_dir', path: input });
 }
 
-// Handle dir_listing responses from server
-const originalHandler = handleServerMessage;
-handleServerMessage = function(msg) {
-  if (msg.type === 'dir_listing') {
-    const input = $dialogCwd.value;
-    const local = buildLocalSuggestions(input);
-    const localPaths = new Set(local.map(i => i.path));
-    const fs = (msg.entries || [])
-      .filter(p => !localPaths.has(p))
-      .map(p => ({ path: p, tag: null }));
-    showSuggestions([...local, ...fs].slice(0, 15));
-    return;
-  }
-  originalHandler(msg);
-};
+// dir_listing responses from the server are handled in handleServerMessage's
+// main switch. No interception needed here.
 
 $dialogCwd.addEventListener('input', () => {
   clearTimeout(cwdDebounce);

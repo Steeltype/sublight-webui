@@ -82,6 +82,12 @@ function timingSafeCompare(a, b) {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
+/** True if the request came from the loopback interface. */
+function isLoopback(req) {
+  const ip = req.socket?.remoteAddress || '';
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+}
+
 /** Returns true if authorized. Sends 401 and returns false otherwise. */
 function httpAuth(req, res) {
   if (!AUTH_TOKEN) return true;
@@ -129,9 +135,16 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Setup & settings API (no auth during first-run setup)
 // ---------------------------------------------------------------------------
 
-app.get('/api/setup-status', (_req, res) => {
+app.get('/api/setup-status', (req, res) => {
   if (settings.firstRun) {
-    res.json({ setupRequired: true, token: AUTH_TOKEN, settings: settings.security });
+    // Only reveal the token to loopback callers. Remote callers (HOST=0.0.0.0
+    // before first setup) get a flag and must read the token from the server
+    // console, which prints it on first-run startup.
+    if (isLoopback(req)) {
+      res.json({ setupRequired: true, token: AUTH_TOKEN, settings: settings.security });
+    } else {
+      res.json({ setupRequired: true, tokenOnConsole: true, settings: settings.security });
+    }
   } else {
     res.json({ setupRequired: false, authRequired: AUTH_TOKEN !== null });
   }
@@ -623,6 +636,18 @@ function ensureProcess(session, ws) {
 function sendMessage(session, text, ws, attachments) {
   ensureProcess(session, ws);
 
+  // If spawn failed (e.g., `claude` not on PATH) the error handler already
+  // nulled out session.proc and notified the client. Bail rather than crashing
+  // on a null stdin.
+  if (!session.proc?.stdin) {
+    sendJSON(ws, {
+      type: 'error',
+      sessionId: session.localId,
+      message: 'Claude process is not running. Is the `claude` CLI installed and on PATH?',
+    });
+    return;
+  }
+
   session.status = 'busy';
   logToSession(session, { type: 'user_message', text, hasAttachments: !!attachments?.length });
 
@@ -857,6 +882,9 @@ httpServer.listen(PORT, HOST, () => {
   }
   if (settings.firstRun) {
     console.log('\x1b[36m→ First run — open the UI to complete setup\x1b[0m');
+    if (AUTH_TOKEN) {
+      console.log(`\x1b[36m→ Setup token: ${AUTH_TOKEN}\x1b[0m`);
+    }
   }
   console.log(`Artifact MCP: ${ARTIFACT_MCP_PATH}`);
 });
