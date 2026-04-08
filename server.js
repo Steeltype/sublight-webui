@@ -381,6 +381,35 @@ app.post('/artifact', (req, res) => {
     session.name = artifact.name;
   }
 
+  // For permission_request, we forward to browser and wait for the user's
+  // allow/deny decision. The MCP permission_prompt tool expects { behavior,
+  // updatedInput?, message? } back so it can hand the right JSON to Claude.
+  if (artifact.type === 'permission_request') {
+    const requestId = crypto.randomUUID();
+    artifact.requestId = requestId;
+
+    const timeout = setTimeout(() => {
+      pendingPermissionRequests.delete(requestId);
+      res.json({ behavior: 'deny', message: 'Permission prompt timed out after 120s' });
+    }, 120000);
+
+    pendingPermissionRequests.set(requestId, {
+      resolve: (decision) => {
+        clearTimeout(timeout);
+        pendingPermissionRequests.delete(requestId);
+        res.json(decision);
+      },
+    });
+
+    const event = { type: 'artifact', sessionId, artifact };
+    for (const ws of wss.clients) {
+      const connSet = connectionSessions.get(ws);
+      if (connSet?.has(sessionId)) sendJSON(ws, event);
+    }
+    logToSession(session, { type: 'artifact', artifact });
+    return;
+  }
+
   // For open_url, we forward to browser and wait for the user's response
   // via a pending promise. The browser sends back { opened: true/false }.
   if (artifact.type === 'open_url') {
@@ -426,6 +455,9 @@ app.post('/artifact', (req, res) => {
 
 /** Pending open_url requests awaiting user confirmation */
 const pendingUrlRequests = new Map();
+
+/** Pending permission_prompt requests awaiting user allow/deny */
+const pendingPermissionRequests = new Map();
 
 const httpServer = createServer(app);
 
@@ -564,6 +596,10 @@ function ensureProcess(session, ws) {
 
   if (session.permissionMode === 'bypass') {
     args.push('--dangerously-skip-permissions');
+  } else {
+    // Route Claude's permission prompts through our MCP tool so we can show
+    // them in the browser instead of waiting on a tty that doesn't exist.
+    args.push('--permission-prompt-tool', 'mcp__sublight-artifacts__permission_prompt');
   }
 
   // Inject our artifact MCP server alongside existing MCP configs
@@ -878,6 +914,17 @@ wss.on('connection', (ws) => {
         if (pending) {
           pending.resolve(msg.opened);
         }
+        break;
+      }
+
+      // ---- User response to permission_request allow/deny ----
+      case 'permission_response': {
+        const pending = pendingPermissionRequests.get(msg.requestId);
+        if (!pending) break;
+        const decision = msg.allow
+          ? { behavior: 'allow', updatedInput: msg.updatedInput || undefined }
+          : { behavior: 'deny', message: msg.message || 'User denied permission' };
+        pending.resolve(decision);
         break;
       }
 
