@@ -591,11 +591,19 @@ async function rehydrateSessionFromLog(sessionId) {
   const session = state.sessions.get(sessionId);
   if (!session) return;
 
+  // Track the parent for the assistant-text accumulator so flushed text
+  // lands under the same parent as the text blocks that produced it.
   let pendingAssistant = '';
+  let pendingAssistantParent = null;
   const flushAssistant = () => {
     if (pendingAssistant) {
-      session.messages.push({ role: 'assistant', text: pendingAssistant });
+      session.messages.push({
+        role: 'assistant',
+        text: pendingAssistant,
+        parentToolUseId: pendingAssistantParent,
+      });
       pendingAssistant = '';
+      pendingAssistantParent = null;
     }
   };
 
@@ -606,14 +614,14 @@ async function rehydrateSessionFromLog(sessionId) {
 
     if (entry.type === 'user_message') {
       flushAssistant();
-      session.messages.push({ role: 'user', text: entry.text, attachments: null });
+      session.messages.push({ role: 'user', text: entry.text, attachments: null, parentToolUseId: null });
       session.lastUserTurn = { text: entry.text, attachments: null };
       continue;
     }
 
     if (entry.type === 'error' && entry.message) {
       flushAssistant();
-      session.messages.push({ role: 'error', text: entry.message });
+      session.messages.push({ role: 'error', text: entry.message, parentToolUseId: null });
       continue;
     }
 
@@ -632,16 +640,23 @@ async function rehydrateSessionFromLog(sessionId) {
 
     if (entry.type !== 'claude_event' || !entry.event) continue;
     const ev = entry.event;
+    const parentId = ev.parent_tool_use_id || null;
 
     if (ev.type === 'assistant') {
       const content = ev.message?.content;
       if (!Array.isArray(content)) continue;
       for (const block of content) {
         if (block.type === 'text' && block.text) {
+          // If the parent changed mid-stream, flush what we have and start
+          // a new accumulator under the new parent.
+          if (pendingAssistant && pendingAssistantParent !== parentId) {
+            flushAssistant();
+          }
           pendingAssistant += block.text;
+          pendingAssistantParent = parentId;
         } else if (block.type === 'thinking' && block.thinking) {
           flushAssistant();
-          session.messages.push({ role: 'thinking', text: block.thinking });
+          session.messages.push({ role: 'thinking', text: block.thinking, parentToolUseId: parentId });
         } else if (block.type === 'tool_use') {
           flushAssistant();
           session.messages.push({
@@ -650,6 +665,7 @@ async function rehydrateSessionFromLog(sessionId) {
             input: block.input,
             result: null,
             id: block.id,
+            parentToolUseId: parentId,
           });
         } else if (block.type === 'tool_result') {
           const existing = session.messages.find((m) => m.id === block.tool_use_id);
@@ -660,7 +676,7 @@ async function rehydrateSessionFromLog(sessionId) {
       if (pendingAssistant) {
         flushAssistant();
       } else if (ev.subtype === 'success' && ev.result) {
-        session.messages.push({ role: 'assistant', text: ev.result });
+        session.messages.push({ role: 'assistant', text: ev.result, parentToolUseId: parentId });
       }
       if (ev.total_cost_usd != null) session.costUsd = ev.total_cost_usd;
     }
@@ -773,6 +789,11 @@ function handleServerMessage(msg) {
         streamingEl: null,
         streamingText: '',
         pendingToolCards: new Map(),
+        // Map of tool_use_id → container element. When an event carries
+        // parent_tool_use_id, new child elements append into that parent's
+        // container instead of the top-level #messages. Supports arbitrary
+        // nesting depth (a Task subagent can spawn another Task).
+        toolContainers: new Map(),
         costUsd: null,
       };
       state.sessions.set(msg.sessionId, session);
@@ -791,6 +812,7 @@ function handleServerMessage(msg) {
         streamingEl: null,
         streamingText: '',
         pendingToolCards: new Map(),
+        toolContainers: new Map(),
         costUsd: null,
       };
       state.sessions.set(msg.sessionId, session);
@@ -996,7 +1018,7 @@ function handleClaudeEvent(session, event) {
           if (isActive) {
             appendThinking(session, block.thinking);
           } else {
-            session.messages.push({ role: 'thinking', text: block.thinking });
+            session.messages.push({ role: 'thinking', text: block.thinking, parentToolUseId: session.currentParentToolUseId || null });
           }
         }
 
@@ -1013,7 +1035,7 @@ function handleClaudeEvent(session, event) {
           if (isActive) {
             appendToolUse(session, block);
           } else {
-            session.messages.push({ role: 'tool', name: block.name, input: block.input, result: null, id: block.id });
+            session.messages.push({ role: 'tool', name: block.name, input: block.input, result: null, id: block.id, parentToolUseId: session.currentParentToolUseId || null });
           }
         }
 
@@ -1040,7 +1062,7 @@ function handleClaudeEvent(session, event) {
             renderStreamingText(session);
             finalizeStreaming(session);
           } else {
-            session.messages.push({ role: 'assistant', text: event.result });
+            session.messages.push({ role: 'assistant', text: event.result, parentToolUseId: session.currentParentToolUseId || null });
           }
         }
       }
@@ -1060,12 +1082,27 @@ function handleClaudeEvent(session, event) {
 // Streaming text rendering
 // ---------------------------------------------------------------------------
 
+/**
+ * Return the DOM element new chat elements should be appended to. Top-level
+ * events go into #messages; events with a parent_tool_use_id drop into the
+ * "children" container inside that parent Task card. Falls back to #messages
+ * if the parent container is unknown (e.g. the Task card was created before
+ * we started tracking children, or the parent id refers to a tool we never
+ * rendered).
+ */
+function getRenderContainer(session) {
+  const parentId = session.currentParentToolUseId;
+  if (!parentId) return $messages;
+  const container = session.toolContainers?.get(parentId);
+  return container || $messages;
+}
+
 function ensureStreamingEl(session) {
   if (session.streamingEl) return;
   const el = document.createElement('div');
   el.className = 'msg msg-assistant streaming';
   if (session.currentParentToolUseId) el.classList.add('from-subagent');
-  $messages.appendChild(el);
+  getRenderContainer(session).appendChild(el);
   session.streamingEl = el;
   scrollToBottom();
 }
@@ -1079,7 +1116,11 @@ function renderStreamingText(session) {
 function finalizeStreaming(session) {
   if (!session.streamingEl) return;
   session.streamingEl.classList.remove('streaming');
-  session.messages.push({ role: 'assistant', text: session.streamingText });
+  session.messages.push({
+    role: 'assistant',
+    text: session.streamingText,
+    parentToolUseId: session.currentParentToolUseId || null,
+  });
   session.streamingEl = null;
   session.streamingText = '';
 }
@@ -1099,8 +1140,8 @@ function appendThinking(session, text) {
   body.className = 'thinking-body';
   body.textContent = text;
   details.appendChild(body);
-  $messages.appendChild(details);
-  session.messages.push({ role: 'thinking', text });
+  getRenderContainer(session).appendChild(details);
+  session.messages.push({ role: 'thinking', text, parentToolUseId: session.currentParentToolUseId || null });
   scrollToBottom();
 }
 
@@ -1114,7 +1155,11 @@ function appendToolUse(session, block) {
   if (session.currentParentToolUseId) details.classList.add('from-subagent');
   // A Task tool launches a subagent. Mark the card so the user sees it's a
   // "parent" of any nested events that follow.
-  if (block.name === 'Task') details.classList.add('task-parent');
+  const isTask = block.name === 'Task';
+  if (isTask) {
+    details.classList.add('task-parent');
+    details.open = true; // auto-expand so the nested activity is visible
+  }
   const summary = document.createElement('summary');
   summary.textContent = block.name;
   details.appendChild(summary);
@@ -1124,13 +1169,30 @@ function appendToolUse(session, block) {
     ? block.input
     : JSON.stringify(block.input, null, 2);
   details.appendChild(inputBody);
+
+  // Every tool card gets a children container. For Task tools this is where
+  // subagent events (thinking, tool_use, assistant text) will land. For
+  // regular tools it stays empty — harmless and keeps the shape uniform.
+  const children = document.createElement('div');
+  children.className = 'tool-children';
+  details.appendChild(children);
+  session.toolContainers.set(block.id, children);
+
   const resultBody = document.createElement('div');
   resultBody.className = 'tool-body';
   resultBody.style.display = 'none';
   details.appendChild(resultBody);
-  $messages.appendChild(details);
+
+  getRenderContainer(session).appendChild(details);
   session.pendingToolCards.set(block.id, { details, resultBody });
-  session.messages.push({ role: 'tool', name: block.name, input: block.input, result: null, id: block.id });
+  session.messages.push({
+    role: 'tool',
+    name: block.name,
+    input: block.input,
+    result: null,
+    id: block.id,
+    parentToolUseId: session.currentParentToolUseId || null,
+  });
   scrollToBottom();
 }
 
@@ -1195,7 +1257,7 @@ function appendError(session, text) {
     const el = document.createElement('div');
     el.className = 'msg msg-error';
     el.textContent = text;
-    $messages.appendChild(el);
+    getRenderContainer(session).appendChild(el);
     scrollToBottom();
   }
 }
@@ -1241,25 +1303,45 @@ function renderChat() {
   updateRuntimeStrip(session);
 
   $messages.replaceChildren();
+  // Rebuild toolContainers from scratch — we're about to re-append every
+  // message, and nested children resolve parents via this map.
+  session.toolContainers = new Map();
+
+  // Resolve the container for a message: if it has a parent and we've
+  // already rendered that parent's children container, use it; otherwise
+  // fall back to the top-level messages area. The fallback handles
+  // out-of-order or orphaned events gracefully.
+  const containerFor = (parentId) => {
+    if (parentId && session.toolContainers.has(parentId)) {
+      return session.toolContainers.get(parentId);
+    }
+    return $messages;
+  };
+
   for (const msg of session.messages) {
+    const container = containerFor(msg.parentToolUseId);
+    const isSubagent = !!msg.parentToolUseId;
     switch (msg.role) {
       case 'user': {
         const el = document.createElement('div');
         el.className = 'msg msg-user';
+        if (isSubagent) el.classList.add('from-subagent');
         el.textContent = msg.text;
-        $messages.appendChild(el);
+        container.appendChild(el);
         break;
       }
       case 'assistant': {
         const el = document.createElement('div');
         el.className = 'msg msg-assistant';
+        if (isSubagent) el.classList.add('from-subagent');
         setMarkdownContent(el, msg.text);
-        $messages.appendChild(el);
+        container.appendChild(el);
         break;
       }
       case 'thinking': {
         const details = document.createElement('details');
         details.className = 'thinking-card';
+        if (isSubagent) details.classList.add('from-subagent');
         const summary = document.createElement('summary');
         summary.textContent = 'Thinking';
         details.appendChild(summary);
@@ -1267,12 +1349,18 @@ function renderChat() {
         body.className = 'thinking-body';
         body.textContent = msg.text;
         details.appendChild(body);
-        $messages.appendChild(details);
+        container.appendChild(details);
         break;
       }
       case 'tool': {
         const details = document.createElement('details');
         details.className = 'tool-card';
+        if (isSubagent) details.classList.add('from-subagent');
+        const isTask = msg.name === 'Task';
+        if (isTask) {
+          details.classList.add('task-parent');
+          details.open = true;
+        }
         const summary = document.createElement('summary');
         summary.textContent = msg.name;
         details.appendChild(summary);
@@ -1282,20 +1370,27 @@ function renderChat() {
           ? msg.input
           : JSON.stringify(msg.input, null, 2);
         details.appendChild(inputBody);
+        // Register the children container before appending the card so any
+        // later-arriving nested messages can find it.
+        const children = document.createElement('div');
+        children.className = 'tool-children';
+        details.appendChild(children);
+        if (msg.id) session.toolContainers.set(msg.id, children);
         if (msg.result != null) {
           const resultBody = document.createElement('div');
           resultBody.className = 'tool-body';
           resultBody.textContent = msg.result;
           details.appendChild(resultBody);
         }
-        $messages.appendChild(details);
+        container.appendChild(details);
         break;
       }
       case 'error': {
         const el = document.createElement('div');
         el.className = 'msg msg-error';
+        if (isSubagent) el.classList.add('from-subagent');
         el.textContent = msg.text;
-        $messages.appendChild(el);
+        container.appendChild(el);
         break;
       }
     }

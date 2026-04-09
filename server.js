@@ -642,7 +642,27 @@ function ensureProcess(session, ws) {
   const childEnv = { ...process.env };
   delete childEnv.SUBLIGHT_TOKEN;
 
-  const proc = spawn('claude', args, {
+  // SUBLIGHT_CLAUDE_CMD overrides the spawn command for testing. It can be
+  // either a plain command like "claude" or a JSON array for node + script
+  // form: '["node","tests/fixtures/fake-claude.js"]'. Production ignores it.
+  let cmd = 'claude';
+  let cmdArgs = args;
+  const override = process.env.SUBLIGHT_CLAUDE_CMD;
+  if (override) {
+    try {
+      const parsed = JSON.parse(override);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        cmd = parsed[0];
+        cmdArgs = [...parsed.slice(1), ...args];
+      } else {
+        cmd = override;
+      }
+    } catch {
+      cmd = override;
+    }
+  }
+
+  const proc = spawn(cmd, cmdArgs, {
     cwd: session.cwd,
     env: childEnv,
     stdio: ['pipe', 'pipe', 'pipe'],

@@ -921,6 +921,33 @@ html, body {
   border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
 }
 
+/* Children container inside a tool card — holds nested subagent events. */
+.tool-children {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 8px 0 0 0;
+  padding-left: 12px;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.tool-children:empty {
+  display: none;
+}
+
+/* When nested events are DOM children of their parent, we don't need the
+   extra visual inset + badge that top-level .from-subagent elements get.
+   Scope the override to anything inside a .tool-children container. */
+.tool-children .from-subagent {
+  margin-left: 0 !important;
+  border-left: none !important;
+  padding-left: 0 !important;
+}
+
+.tool-children .from-subagent::before {
+  content: none !important;
+}
+
 /* Command palette */
 #palette-dialog {
   width: min(560px, 92vw);
