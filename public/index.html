@@ -10,6 +10,7 @@
   <script src="vendor/highlight.min.js"></script>
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
+  <script src="vendor/jszip.min.js"></script>
 </head>
 <body>
   <!-- Mobile hamburger — shown only on narrow screens via CSS. -->
@@ -86,7 +87,8 @@
           <span id="chat-runtime" class="hidden" title=""></span>
           <div id="chat-actions">
             <button id="btn-retry" class="hidden" title="Resend the last user message">Retry</button>
-            <button id="btn-save" title="Save session">Save</button>
+            <button id="btn-save" title="Export session as markdown">Save</button>
+            <button id="btn-bundle" title="Export full session bundle (markdown + artifacts + raw log)">Bundle</button>
             <button id="btn-artifacts" title="Toggle artifacts">Artifacts</button>
             <button id="btn-notes" title="Toggle notes">Notes</button>
           </div>
