@@ -1688,16 +1688,54 @@ function renderArtifactCard(artifact) {
     const title = document.createElement('div');
     title.className = 'artifact-title';
     title.textContent = artifact.title;
+    // Copy-to-clipboard button inline in the title row for quick grab.
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'diff-copy-btn';
+    copyBtn.textContent = 'Copy';
+    copyBtn.title = 'Copy raw diff to clipboard';
+    copyBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try {
+        await navigator.clipboard.writeText(artifact.diff);
+        copyBtn.textContent = 'Copied!';
+        setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+      } catch (err) {
+        console.error('Clipboard copy failed:', err);
+      }
+    });
+    title.appendChild(copyBtn);
     card.appendChild(title);
+
+    // Quick stat summary: +added / -removed across the whole diff.
+    let added = 0, removed = 0;
+    const lines = artifact.diff.split('\n');
+    for (const line of lines) {
+      if (line.startsWith('+') && !line.startsWith('+++')) added++;
+      else if (line.startsWith('-') && !line.startsWith('---')) removed++;
+    }
+    if (added || removed) {
+      const stat = document.createElement('div');
+      stat.className = 'diff-stat';
+      const addSpan = document.createElement('span');
+      addSpan.className = 'diff-add';
+      addSpan.textContent = `+${added}`;
+      const rmSpan = document.createElement('span');
+      rmSpan.className = 'diff-remove';
+      rmSpan.textContent = `−${removed}`;
+      stat.append(addSpan, ' ', rmSpan);
+      card.appendChild(stat);
+    }
+
     const pre = document.createElement('pre');
     pre.className = 'diff-content';
-    // Color diff lines
-    for (const line of artifact.diff.split('\n')) {
+    for (const line of lines) {
       const span = document.createElement('span');
       span.textContent = line + '\n';
-      if (line.startsWith('+') && !line.startsWith('+++')) {
+      if (line.startsWith('+++') || line.startsWith('---')) {
+        span.className = 'diff-file';
+      } else if (line.startsWith('+')) {
         span.className = 'diff-add';
-      } else if (line.startsWith('-') && !line.startsWith('---')) {
+      } else if (line.startsWith('-')) {
         span.className = 'diff-remove';
       } else if (line.startsWith('@@')) {
         span.className = 'diff-hunk';
@@ -2205,6 +2243,132 @@ async function boot() {
 }
 
 // ---------------------------------------------------------------------------
+// Command palette — Ctrl+K quick switcher over live sessions + resumable logs
+// ---------------------------------------------------------------------------
+
+const $paletteDialog = document.getElementById('palette-dialog');
+const $paletteInput = document.getElementById('palette-input');
+const $paletteList = document.getElementById('palette-list');
+let paletteItems = [];
+let paletteSelected = 0;
+
+async function openCommandPalette() {
+  // Build an item list: open sessions first, then the resumable logs fetch.
+  const items = [];
+  for (const session of state.sessions.values()) {
+    items.push({
+      kind: 'session',
+      id: session.id,
+      label: session.name || shortCwd(session.cwd) || 'Session',
+      detail: session.cwd,
+      busy: session.status === 'busy',
+    });
+  }
+  items.push({ kind: 'action', id: 'new', label: 'New session…', detail: 'Ctrl+N' });
+
+  // Kick off the logs fetch in the background so the palette opens immediately.
+  // The resumable rows get appended when it lands.
+  paletteItems = items;
+  paletteSelected = 0;
+  $paletteInput.value = '';
+  renderPaletteList();
+  $paletteDialog.showModal();
+  $paletteInput.focus();
+
+  try {
+    const res = await authFetch('/api/logs');
+    if (!res.ok) return;
+    const data = await res.json();
+    const resumables = data.logs
+      .filter((l) => l.resumable)
+      .slice(0, 20)
+      .map((l) => ({
+        kind: 'resume',
+        id: l.id,
+        label: l.sessionName || shortPath(l.cwd) || l.id.slice(0, 8),
+        detail: `resume · ${l.cwd}`,
+        log: l,
+      }));
+    paletteItems = [...items, ...resumables];
+    renderPaletteList();
+  } catch (err) {
+    console.error('palette log fetch failed', err);
+  }
+}
+
+function renderPaletteList() {
+  const q = $paletteInput.value.trim().toLowerCase();
+  const filtered = q
+    ? paletteItems.filter((i) =>
+        (i.label + ' ' + (i.detail || '')).toLowerCase().includes(q),
+      )
+    : paletteItems;
+  paletteSelected = Math.min(paletteSelected, Math.max(0, filtered.length - 1));
+
+  $paletteList.replaceChildren();
+  filtered.forEach((item, i) => {
+    const li = document.createElement('li');
+    li.className = 'palette-item';
+    if (i === paletteSelected) li.classList.add('active');
+    const tag = document.createElement('span');
+    tag.className = 'palette-tag palette-tag-' + item.kind;
+    tag.textContent = item.kind;
+    li.appendChild(tag);
+    const label = document.createElement('span');
+    label.className = 'palette-label';
+    label.textContent = item.label;
+    li.appendChild(label);
+    if (item.detail) {
+      const detail = document.createElement('span');
+      detail.className = 'palette-detail';
+      detail.textContent = item.detail;
+      li.appendChild(detail);
+    }
+    li.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      activatePaletteItem(item);
+    });
+    $paletteList.appendChild(li);
+  });
+  $paletteList.dataset.filtered = JSON.stringify(filtered.map((_, i) => i));
+}
+
+function activatePaletteItem(item) {
+  $paletteDialog.close();
+  if (item.kind === 'session') {
+    switchSession(item.id);
+  } else if (item.kind === 'resume') {
+    resumeLog(item.log);
+  } else if (item.kind === 'action' && item.id === 'new') {
+    openNewSessionDialog();
+  }
+}
+
+$paletteInput.addEventListener('input', () => {
+  paletteSelected = 0;
+  renderPaletteList();
+});
+
+$paletteInput.addEventListener('keydown', (e) => {
+  const q = $paletteInput.value.trim().toLowerCase();
+  const filtered = q
+    ? paletteItems.filter((i) => (i.label + ' ' + (i.detail || '')).toLowerCase().includes(q))
+    : paletteItems;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    paletteSelected = (paletteSelected + 1) % Math.max(1, filtered.length);
+    renderPaletteList();
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    paletteSelected = (paletteSelected - 1 + filtered.length) % Math.max(1, filtered.length);
+    renderPaletteList();
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    if (filtered[paletteSelected]) activatePaletteItem(filtered[paletteSelected]);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Global keyboard shortcuts
 // ---------------------------------------------------------------------------
 //
@@ -2228,9 +2392,15 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
+  if (mod && (e.key === 'k' || e.key === 'K')) {
+    e.preventDefault();
+    openCommandPalette();
+    return;
+  }
+
   if (mod && e.key === '/') {
     e.preventDefault();
-    showToast('Shortcuts: Ctrl+N new · Ctrl+Enter send · Esc focus composer');
+    showToast('Shortcuts: Ctrl+K switch · Ctrl+N new · Ctrl+Enter send · Esc focus composer');
     return;
   }
 

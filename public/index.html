@@ -175,6 +175,15 @@
   </dialog>
 
   <!-- ─── Settings dialog ─────────────────────────────────────────── -->
+  <!-- ─── Command palette (Ctrl+K quick switcher) ────────────────── -->
+  <dialog id="palette-dialog">
+    <div id="palette-container">
+      <input type="search" id="palette-input" placeholder="Switch session, resume, or open..." autocomplete="off">
+      <ul id="palette-list"></ul>
+      <div class="palette-hint">↑↓ navigate · Enter select · Esc close</div>
+    </div>
+  </dialog>
+
   <dialog id="settings-dialog">
     <form method="dialog" id="settings-form">
       <h2>Settings</h2>
