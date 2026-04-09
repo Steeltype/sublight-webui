@@ -37,6 +37,10 @@ const DEFAULT_SETTINGS = {
     idleTimeoutMinutes: 120,
     // Max user messages per minute per WebSocket connection. 0 disables.
     messageRateLimitPerMin: 30,
+    // Delete session NDJSON logs whose last-modified time is older than this
+    // many days. 0 disables. audit.ndjson and logs for currently-live sessions
+    // are never touched.
+    maxLogAgeDays: 30,
   },
 };
 
@@ -334,7 +338,7 @@ app.get('/api/logs', (req, res) => {
       .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
 
     const totalSize = files.reduce((sum, f) => sum + f.size, 0);
-    res.json({ logs: files, totalSize });
+    res.json({ logs: files, totalSize, logDir: path.resolve(LOG_DIR) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1081,31 +1085,57 @@ wss.on('connection', (ws) => {
 const IDLE_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 
 setInterval(() => {
+  // Idle sweep: kill Claude subprocesses that have gone quiet.
   const timeoutMinutes = settings.security.idleTimeoutMinutes || 0;
-  if (timeoutMinutes <= 0) return;
-  const cutoff = Date.now() - timeoutMinutes * 60 * 1000;
+  if (timeoutMinutes > 0) {
+    const cutoff = Date.now() - timeoutMinutes * 60 * 1000;
+    for (const session of [...sessions.values()]) {
+      if (session.status === 'busy') continue;
+      if (!session.lastActiveAt || session.lastActiveAt > cutoff) continue;
 
-  for (const session of [...sessions.values()]) {
-    // Never sweep a session that's still actively streaming a response.
-    if (session.status === 'busy') continue;
-    if (!session.lastActiveAt || session.lastActiveAt > cutoff) continue;
+      logToSession(session, {
+        type: 'idle_sweep',
+        idleForMs: Date.now() - session.lastActiveAt,
+        timeoutMinutes,
+      });
 
-    logToSession(session, {
-      type: 'idle_sweep',
-      idleForMs: Date.now() - session.lastActiveAt,
-      timeoutMinutes,
-    });
-
-    // Notify any connections that still own this session, then tear it down.
-    const closeEvent = { type: 'session_closed', sessionId: session.localId, reason: 'idle_timeout' };
-    for (const ws of wss.clients) {
-      const connSet = connectionSessions.get(ws);
-      if (connSet?.has(session.localId)) {
-        sendJSON(ws, closeEvent);
-        connSet.delete(session.localId);
+      const closeEvent = { type: 'session_closed', sessionId: session.localId, reason: 'idle_timeout' };
+      for (const ws of wss.clients) {
+        const connSet = connectionSessions.get(ws);
+        if (connSet?.has(session.localId)) {
+          sendJSON(ws, closeEvent);
+          connSet.delete(session.localId);
+        }
       }
+      killSession(session);
     }
-    killSession(session);
+  }
+
+  // Log rotation: delete session NDJSON logs older than maxLogAgeDays.
+  // Never touches audit.ndjson or logs for currently-live sessions.
+  const maxAgeDays = settings.security.maxLogAgeDays || 0;
+  if (maxAgeDays > 0) {
+    const ageCutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+    try {
+      const files = fs.readdirSync(LOG_DIR).filter((f) => f.endsWith('.ndjson') && f !== 'audit.ndjson');
+      for (const f of files) {
+        const id = f.replace('.ndjson', '');
+        if (sessions.has(id)) continue; // skip live sessions
+        // nosemgrep — f came from readdirSync of a server-controlled directory
+        const full = path.join(LOG_DIR, f);
+        try {
+          const stat = fs.statSync(full);
+          if (stat.mtimeMs < ageCutoff) {
+            fs.unlinkSync(full);
+            audit({ type: 'log_rotated', id, ageDays: Math.floor((Date.now() - stat.mtimeMs) / (24 * 60 * 60 * 1000)) });
+          }
+        } catch (err) {
+          console.error(`[log_rotation] failed to stat/remove ${f}: ${err.message}`);
+        }
+      }
+    } catch (err) {
+      console.error(`[log_rotation] sweep failed: ${err.message}`);
+    }
   }
 }, IDLE_SWEEP_INTERVAL_MS).unref();
 

@@ -420,9 +420,8 @@ html, body {
 .log-actions button:hover { background: var(--bg-hover); }
 
 #logs-filter {
-  width: 100%;
+  flex: 1;
   padding: 8px 12px;
-  margin-bottom: 12px;
   background: var(--bg-input);
   color: var(--text);
   border: 1px solid var(--border);
@@ -434,6 +433,145 @@ html, body {
 #logs-filter:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+.logs-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.logs-toolbar-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.logs-dir-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 11px;
+}
+
+.logs-dir-label {
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+#logs-dir-path {
+  flex: 1;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  background: transparent;
+  padding: 0;
+}
+
+#btn-copy-logs-dir {
+  font-size: 10px;
+  padding: 3px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+#btn-copy-logs-dir:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+/* Audit log viewer */
+#audit-dialog {
+  width: min(720px, 92vw);
+  max-height: 80vh;
+  padding: 20px 24px;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#audit-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
+
+#audit-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+#audit-list {
+  flex: 1;
+  overflow-y: auto;
+  max-height: 55vh;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.audit-row {
+  display: grid;
+  grid-template-columns: 140px 130px 1fr;
+  gap: 10px;
+  padding: 4px 8px;
+  border-radius: 3px;
+}
+
+.audit-row:hover {
+  background: var(--bg-hover);
+}
+
+.audit-ts {
+  color: var(--text-dim);
+}
+
+.audit-event {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.audit-event-auth_failed,
+.audit-event-ws_auth_failed {
+  color: var(--error);
+}
+
+.audit-event-token_regenerated {
+  color: #f59e0b;
+}
+
+.audit-meta {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .log-tag {

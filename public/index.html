@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Sublight</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="vendor/github-dark.min.css">
   <script src="vendor/highlight.min.js"></script>
@@ -163,7 +164,17 @@
         <span id="logs-storage" class="setting-value"></span>
       </div>
       <p class="logs-notice">Logs record full session transcripts (messages, tool use, errors) as NDJSON. They are stored locally and never sent anywhere.</p>
-      <input type="search" id="logs-filter" placeholder="Filter by name, cwd, date, or id..." autocomplete="off">
+      <div class="logs-dir-row">
+        <span class="logs-dir-label">Location</span>
+        <code id="logs-dir-path"></code>
+        <button type="button" id="btn-copy-logs-dir">Copy</button>
+      </div>
+      <div class="logs-toolbar">
+        <input type="search" id="logs-filter" placeholder="Filter by name, cwd, date, or id..." autocomplete="off">
+        <label class="logs-toolbar-toggle">
+          <input type="checkbox" id="logs-show-stubs"> Show stubs
+        </label>
+      </div>
       <div id="logs-list"></div>
       <div id="logs-viewer" class="hidden">
         <div id="logs-viewer-header">
@@ -180,6 +191,21 @@
   </dialog>
 
   <!-- ─── Settings dialog ─────────────────────────────────────────── -->
+  <!-- ─── Audit log viewer ───────────────────────────────────────── -->
+  <dialog id="audit-dialog">
+    <div id="audit-container">
+      <div id="audit-header">
+        <h2>Audit Log</h2>
+        <span id="audit-count" class="setting-value"></span>
+      </div>
+      <p class="logs-notice">Security events (auth failures, setup, token regeneration, log rotation). Newest last.</p>
+      <div id="audit-list"></div>
+      <div class="dialog-actions">
+        <button type="button" id="audit-close">Close</button>
+      </div>
+    </div>
+  </dialog>
+
   <!-- ─── Command palette (Ctrl+K quick switcher) ────────────────── -->
   <dialog id="palette-dialog">
     <div id="palette-container">
@@ -207,6 +233,10 @@
           <label>Bind</label>
           <span id="settings-bind" class="setting-value"></span>
         </div>
+        <div class="setting-inline">
+          <label>Audit log</label>
+          <button type="button" id="btn-view-audit">View recent events</button>
+        </div>
       </section>
 
       <section class="settings-section">
@@ -225,6 +255,10 @@
         <div class="setting-inline">
           <label for="setting-rate-limit">Message rate limit (per min, 0 = off)</label>
           <input type="number" id="setting-rate-limit" min="0" max="10000">
+        </div>
+        <div class="setting-inline">
+          <label for="setting-max-log-age">Delete logs older than (days, 0 = never)</label>
+          <input type="number" id="setting-max-log-age" min="0" max="3650">
         </div>
       </section>
 

@@ -211,6 +211,7 @@ document.getElementById('btn-settings').addEventListener('click', async () => {
     document.getElementById('setting-max-sessions').value = data.security.maxSessions;
     document.getElementById('setting-idle-timeout').value = data.security.idleTimeoutMinutes ?? 120;
     document.getElementById('setting-rate-limit').value = data.security.messageRateLimitPerMin ?? 30;
+    document.getElementById('setting-max-log-age').value = data.security.maxLogAgeDays ?? 30;
 
     $settingsDialog.showModal();
   } catch (err) {
@@ -224,6 +225,69 @@ document.getElementById('btn-copy-settings-token').addEventListener('click', () 
   btn.textContent = 'Copied!';
   setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
 });
+
+// ---------------------------------------------------------------------------
+// Audit log viewer
+// ---------------------------------------------------------------------------
+
+const $auditDialog = document.getElementById('audit-dialog');
+const $auditList = document.getElementById('audit-list');
+const $auditCount = document.getElementById('audit-count');
+
+document.getElementById('btn-view-audit').addEventListener('click', async () => {
+  try {
+    const res = await authFetch('/api/audit?limit=200');
+    if (!res.ok) {
+      showToast('Failed to load audit log');
+      return;
+    }
+    const data = await res.json();
+    $auditCount.textContent = `${data.entries.length} shown · ${data.totalLines} total`;
+
+    $auditList.replaceChildren();
+    if (data.entries.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'logs-empty';
+      empty.textContent = 'No audit entries yet.';
+      $auditList.appendChild(empty);
+    } else {
+      // Newest first for easier scanning.
+      for (const entry of [...data.entries].reverse()) {
+        const row = document.createElement('div');
+        row.className = 'audit-row';
+
+        const ts = document.createElement('span');
+        ts.className = 'audit-ts';
+        ts.textContent = entry.ts ? new Date(entry.ts).toLocaleString() : '—';
+        row.appendChild(ts);
+
+        const ev = document.createElement('span');
+        ev.className = 'audit-event audit-event-' + (entry.event?.type || 'unknown');
+        ev.textContent = entry.event?.type || 'unknown';
+        row.appendChild(ev);
+
+        const meta = document.createElement('span');
+        meta.className = 'audit-meta';
+        const bits = [];
+        if (entry.ip) bits.push(entry.ip);
+        if (entry.event?.path) bits.push(entry.event.path);
+        if (entry.event?.hadToken !== undefined) bits.push(entry.event.hadToken ? 'token:bad' : 'token:none');
+        if (entry.event?.id) bits.push(entry.event.id.slice(0, 8));
+        if (entry.event?.ageDays !== undefined) bits.push(`age:${entry.event.ageDays}d`);
+        meta.textContent = bits.join(' · ');
+        row.appendChild(meta);
+
+        $auditList.appendChild(row);
+      }
+    }
+
+    $auditDialog.showModal();
+  } catch (err) {
+    console.error('Failed to load audit log:', err);
+  }
+});
+
+document.getElementById('audit-close').addEventListener('click', () => $auditDialog.close());
 
 document.getElementById('btn-regen-token').addEventListener('click', async () => {
   const ok = await confirm(
@@ -254,6 +318,7 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
   e.preventDefault();
   const idleTimeoutRaw = parseInt(document.getElementById('setting-idle-timeout').value, 10);
   const rateLimitRaw = parseInt(document.getElementById('setting-rate-limit').value, 10);
+  const maxLogAgeRaw = parseInt(document.getElementById('setting-max-log-age').value, 10);
   const security = {
     scopeFilesToSession: document.getElementById('setting-scope-files').checked,
     serveSvg: !document.getElementById('setting-no-svg').checked,
@@ -261,6 +326,7 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
     defaultPermissionMode: document.getElementById('setting-default-perms').checked ? 'default' : 'bypass',
     idleTimeoutMinutes: Number.isFinite(idleTimeoutRaw) && idleTimeoutRaw >= 0 ? idleTimeoutRaw : 120,
     messageRateLimitPerMin: Number.isFinite(rateLimitRaw) && rateLimitRaw >= 0 ? rateLimitRaw : 30,
+    maxLogAgeDays: Number.isFinite(maxLogAgeRaw) && maxLogAgeRaw >= 0 ? maxLogAgeRaw : 30,
   };
 
   try {
@@ -321,6 +387,9 @@ async function loadLogsList() {
     cachedLogs = data.logs;
 
     document.getElementById('logs-storage').textContent = `${data.logs.length} logs \u00b7 ${formatBytes(data.totalSize)}`;
+    if (data.logDir) {
+      document.getElementById('logs-dir-path').textContent = data.logDir;
+    }
 
     renderLogsList();
   } catch (err) {
@@ -328,12 +397,32 @@ async function loadLogsList() {
   }
 }
 
+document.getElementById('btn-copy-logs-dir').addEventListener('click', () => {
+  const path = document.getElementById('logs-dir-path').textContent;
+  if (!path) return;
+  navigator.clipboard.writeText(path);
+  const btn = document.getElementById('btn-copy-logs-dir');
+  btn.textContent = 'Copied!';
+  setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+});
+
+document.getElementById('logs-show-stubs').addEventListener('change', () => renderLogsList());
+
 function renderLogsList() {
   const filterEl = document.getElementById('logs-filter');
+  const showStubs = document.getElementById('logs-show-stubs')?.checked;
   const q = (filterEl?.value || '').trim().toLowerCase();
 
+  // A "stub" is a log for a session that never got a Claude session id —
+  // usually a crash during spawn or an aborted first message. By default we
+  // hide them to keep the list clean, but expose a toggle.
+  const isStub = (log) => !log.claudeSessionId && !log.messageCount;
+
+  let working = cachedLogs;
+  if (!showStubs) working = working.filter((log) => !isStub(log));
+
   const filtered = q
-    ? cachedLogs.filter((log) => {
+    ? working.filter((log) => {
         const hay = [
           log.sessionName || '',
           log.cwd || '',
@@ -344,7 +433,7 @@ function renderLogsList() {
         ].join(' ').toLowerCase();
         return hay.includes(q);
       })
-    : cachedLogs;
+    : working;
 
   $logsList.replaceChildren();
   if (filtered.length === 0) {
