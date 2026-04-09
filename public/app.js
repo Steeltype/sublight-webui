@@ -2166,7 +2166,18 @@ document.getElementById('new-session-form').addEventListener('submit', (e) => {
   if (!cwd) return;
   addRecentDir(cwd);
   const bypass = document.getElementById('session-bypass').checked;
-  send({ type: 'new_session', cwd, permissionMode: bypass ? 'bypass' : 'default' });
+  // Parse the Allowed tools field into an array, respecting quoted segments
+  // like `"Bash(git log *)"` so Claude gets the full pattern as one entry.
+  const allowedRaw = document.getElementById('session-allowed-tools').value.trim();
+  const allowedTools = allowedRaw
+    ? (allowedRaw.match(/"[^"]+"|\S+/g) || []).map((s) => s.replace(/^"|"$/g, ''))
+    : null;
+  send({
+    type: 'new_session',
+    cwd,
+    permissionMode: bypass ? 'bypass' : 'default',
+    allowedTools: allowedTools && allowedTools.length ? allowedTools : undefined,
+  });
   $dialog.close();
 });
 

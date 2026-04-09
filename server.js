@@ -266,6 +266,7 @@ function extractLogMeta(logPath) {
     let sessionName = null;
     let cwd = null;
     let permissionMode = null;
+    let allowedTools = null;
     let claudeSessionId = null;
     let messageCount = 0;
     let closed = false;
@@ -280,6 +281,7 @@ function extractLogMeta(logPath) {
       if (entry.type === 'session_created') {
         cwd = entry.cwd;
         permissionMode = entry.permissionMode;
+        if (Array.isArray(entry.allowedTools)) allowedTools = entry.allowedTools;
       } else if (entry.type === 'user_message') {
         messageCount++;
       } else if (entry.type === 'artifact' && entry.artifact?.type === 'set_session_name') {
@@ -302,6 +304,7 @@ function extractLogMeta(logPath) {
       sessionName,
       cwd,
       permissionMode,
+      allowedTools,
       claudeSessionId,
       closed,
       messageCount,
@@ -663,6 +666,12 @@ function ensureProcess(session, ws) {
 
   if (session.permissionMode === 'bypass') {
     args.push('--dangerously-skip-permissions');
+  } else if (Array.isArray(session.allowedTools) && session.allowedTools.length) {
+    // Static allowlist for non-bypass mode. Claude will run these without
+    // prompting and deny everything else. This is the practical workaround
+    // while the --permission-prompt-tool + --mcp-config interaction is
+    // broken upstream (see note below).
+    args.push('--allowedTools', ...session.allowedTools);
   }
   // NOTE: we used to pass `--permission-prompt-tool mcp__sublight-artifacts__permission_prompt`
   // here for non-bypass mode, but Claude Code's --permission-prompt-tool validator
@@ -841,6 +850,12 @@ wss.on('connection', (ws) => {
         const localId = crypto.randomUUID();
         const cwd = msg.cwd || process.cwd();
         const permissionMode = msg.permissionMode || settings.security.defaultPermissionMode;
+        // allowedTools is an array of Claude tool-name patterns (e.g. "Read",
+        // "Bash(git log *)"). Only honored in non-bypass mode — bypass already
+        // disables all permission checks.
+        const allowedTools = Array.isArray(msg.allowedTools)
+          ? msg.allowedTools.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim())
+          : null;
         const session = {
           localId,
           claudeSession: null,
@@ -849,6 +864,7 @@ wss.on('connection', (ws) => {
           status: 'idle',
           name: msg.name || null,
           permissionMode,
+          allowedTools,
           artifactSecret: crypto.randomUUID(),
           mcpConfigPath: null,
           lastActiveAt: Date.now(),
@@ -857,7 +873,7 @@ wss.on('connection', (ws) => {
         connSessions.add(localId);
         initSessionLog(localId);
 
-        logToSession(session, { type: 'session_created', cwd, permissionMode });
+        logToSession(session, { type: 'session_created', cwd, permissionMode, allowedTools: allowedTools || null });
         sendJSON(ws, { type: 'session_created', sessionId: localId, cwd });
         break;
       }
@@ -955,6 +971,7 @@ wss.on('connection', (ws) => {
           status: 'idle',
           name: meta.sessionName || null,
           permissionMode: meta.permissionMode || settings.security.defaultPermissionMode,
+          allowedTools: meta.allowedTools || null,
           artifactSecret: crypto.randomUUID(),
           mcpConfigPath: null,
           lastActiveAt: Date.now(),

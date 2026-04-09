@@ -689,6 +689,40 @@ html, body {
   line-height: 1.4;
 }
 
+.session-allowed-label {
+  display: block;
+  margin: 14px 20px 4px 20px;
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.session-allowed-hint {
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-dim);
+  font-weight: normal;
+}
+
+#session-allowed-tools {
+  display: block;
+  margin: 0 20px 16px 20px;
+  width: calc(100% - 40px);
+  padding: 8px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+#session-allowed-tools:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .session-bypass-label .option-warning {
   width: 100%;
   margin-left: 24px;

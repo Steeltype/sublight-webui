@@ -136,8 +136,13 @@
       <p class="session-hint" id="session-bypass-hint">
         Non-bypass sessions inherit your global Claude config, but tool calls that
         would normally show a permission prompt will hang — there's no terminal here
-        to answer them. Enable "Skip permission prompts" for unattended work.
+        to answer them. Use "Allowed tools" below for a static allowlist, or enable
+        "Skip permission prompts" for unattended work.
       </p>
+      <label for="session-allowed-tools" class="session-allowed-label">
+        Allowed tools <span class="session-allowed-hint">(space-separated, non-bypass mode only)</span>
+      </label>
+      <input type="text" id="session-allowed-tools" placeholder='e.g. Read Glob Grep "Bash(git log *)"' autocomplete="off" spellcheck="false">
       <div class="dialog-actions">
         <button type="button" id="dialog-cancel">Cancel</button>
         <button type="submit" id="dialog-create">Create</button>
