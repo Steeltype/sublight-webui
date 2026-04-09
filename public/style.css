@@ -544,6 +544,13 @@ html, body {
   border-top: 1px solid var(--border);
 }
 
+.session-hint {
+  margin: 8px 20px 0 20px;
+  font-size: 11px;
+  color: color-mix(in srgb, #f59e0b 85%, transparent);
+  line-height: 1.4;
+}
+
 .session-bypass-label .option-warning {
   width: 100%;
   margin-left: 24px;
@@ -1216,6 +1223,13 @@ dialog {
   left: 50%;
   transform: translate(-50%, -50%);
   margin: 0;
+}
+
+/* Per-dialog ID rules override the UA `dialog:not([open])` default hiding
+   (ID specificity > element+pseudo), which causes closed dialogs to stay
+   visible. Force them hidden with !important. */
+dialog:not([open]) {
+  display: none !important;
 }
 
 /* ─── New Session dialog ──────────────────────────────────────── */

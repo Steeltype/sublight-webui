@@ -659,11 +659,16 @@ function ensureProcess(session, ws) {
 
   if (session.permissionMode === 'bypass') {
     args.push('--dangerously-skip-permissions');
-  } else {
-    // Route Claude's permission prompts through our MCP tool so we can show
-    // them in the browser instead of waiting on a tty that doesn't exist.
-    args.push('--permission-prompt-tool', 'mcp__sublight-artifacts__permission_prompt');
   }
+  // NOTE: we used to pass `--permission-prompt-tool mcp__sublight-artifacts__permission_prompt`
+  // here for non-bypass mode, but Claude Code's --permission-prompt-tool validator
+  // does NOT look at MCP servers loaded via --mcp-config. The validator only
+  // sees servers from the user's global Claude config, so the tool name is
+  // reported as not-found and the child process exits with code 1 on the first
+  // tool call. Until upstream supports --mcp-config-provided permission tools,
+  // non-bypass sessions will fall back to the Claude CLI's default behavior
+  // (waiting for tty input it can never receive). Users who need unattended
+  // execution should use bypass mode.
 
   // Inject our artifact MCP server alongside existing MCP configs
   const mcpConfigPath = writeMcpConfig(session);

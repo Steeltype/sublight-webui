@@ -870,7 +870,14 @@ function handleClaudeEvent(session, event) {
   switch (event.type) {
     case 'system':
       if (event.subtype === 'init') {
-        session.name = shortCwd(event.cwd || session.cwd);
+        // Only seed the name from the cwd if the session doesn't already have
+        // one. session_created seeds a cwd-based name up front; session_restored
+        // and set_session_name artifacts can replace it with a custom name. On
+        // --resume the init event fires a second time for the same session, and
+        // we must NOT clobber a custom name back to the cwd-derived default.
+        if (!session.name) {
+          session.name = shortCwd(event.cwd || session.cwd);
+        }
         // Capture the Claude runtime state from the init event so we can
         // surface it in the chat header: model, MCP servers, tool/skill counts.
         session.runtime = {

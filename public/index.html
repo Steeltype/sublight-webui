@@ -132,6 +132,10 @@
         Skip permission prompts
         <span class="option-warning">Claude will have unrestricted file and shell access</span>
       </label>
+      <p class="session-hint" id="session-bypass-hint">
+        Without bypass, tool calls that require permission will hang — Claude Code's
+        permission flow is not yet supported over this web interface.
+      </p>
       <div class="dialog-actions">
         <button type="button" id="dialog-cancel">Cancel</button>
         <button type="submit" id="dialog-create">Create</button>
