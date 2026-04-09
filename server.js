@@ -8,6 +8,7 @@ import { createServer } from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
+import { parseLogMeta } from './lib/logMeta.js';
 
 config(); // load .env
 
@@ -259,57 +260,7 @@ app.get('/api/audit', (req, res) => {
 /** Read a log file and extract metadata used for the logs list and resume flow. */
 function extractLogMeta(logPath) {
   try {
-    const content = fs.readFileSync(logPath, 'utf-8');
-    const lines = content.split('\n').filter(Boolean);
-    if (lines.length === 0) return null;
-
-    let sessionName = null;
-    let cwd = null;
-    let permissionMode = null;
-    let allowedTools = null;
-    let claudeSessionId = null;
-    let messageCount = 0;
-    let closed = false;
-
-    // Single pass through the whole file — cheap enough for NDJSON logs and
-    // lets us catch the latest session_id (Claude can rotate it mid-run) and
-    // any later set_session_name artifact.
-    for (const line of lines) {
-      let entry;
-      try { entry = JSON.parse(line); } catch { continue; }
-
-      if (entry.type === 'session_created') {
-        cwd = entry.cwd;
-        permissionMode = entry.permissionMode;
-        if (Array.isArray(entry.allowedTools)) allowedTools = entry.allowedTools;
-      } else if (entry.type === 'user_message') {
-        messageCount++;
-      } else if (entry.type === 'artifact' && entry.artifact?.type === 'set_session_name') {
-        sessionName = entry.artifact.name;
-      } else if (entry.type === 'claude_event' && entry.event?.session_id) {
-        claudeSessionId = entry.event.session_id;
-      } else if (entry.type === 'session_closed_by_user') {
-        closed = true;
-      }
-    }
-
-    let startedAt = null;
-    let endedAt = null;
-    try { startedAt = JSON.parse(lines[0]).ts; } catch {}
-    try { endedAt = JSON.parse(lines[lines.length - 1]).ts; } catch {}
-
-    return {
-      startedAt,
-      endedAt,
-      sessionName,
-      cwd,
-      permissionMode,
-      allowedTools,
-      claudeSessionId,
-      closed,
-      messageCount,
-      entryCount: lines.length,
-    };
+    return parseLogMeta(fs.readFileSync(logPath, 'utf-8'));
   } catch {
     return null;
   }
