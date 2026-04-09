@@ -308,24 +308,54 @@ document.getElementById('btn-logs').addEventListener('click', async () => {
   $logsDialog.showModal();
 });
 
+document.getElementById('logs-filter').addEventListener('input', () => renderLogsList());
+
+// Cached logs list for client-side filtering without refetching.
+let cachedLogs = [];
+
 async function loadLogsList() {
   try {
     const res = await authFetch('/api/logs');
     if (!res.ok) return;
     const data = await res.json();
+    cachedLogs = data.logs;
 
     document.getElementById('logs-storage').textContent = `${data.logs.length} logs \u00b7 ${formatBytes(data.totalSize)}`;
 
-    $logsList.replaceChildren();
-    if (data.logs.length === 0) {
-      const empty = document.createElement('p');
-      empty.className = 'logs-empty';
-      empty.textContent = 'No session logs yet.';
-      $logsList.appendChild(empty);
-      return;
-    }
+    renderLogsList();
+  } catch (err) {
+    console.error('Failed to load logs:', err);
+  }
+}
 
-    for (const log of data.logs) {
+function renderLogsList() {
+  const filterEl = document.getElementById('logs-filter');
+  const q = (filterEl?.value || '').trim().toLowerCase();
+
+  const filtered = q
+    ? cachedLogs.filter((log) => {
+        const hay = [
+          log.sessionName || '',
+          log.cwd || '',
+          log.id,
+          log.startedAt || '',
+          log.endedAt || '',
+          log.permissionMode || '',
+        ].join(' ').toLowerCase();
+        return hay.includes(q);
+      })
+    : cachedLogs;
+
+  $logsList.replaceChildren();
+  if (filtered.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'logs-empty';
+    empty.textContent = q ? `No logs match "${q}".` : 'No session logs yet.';
+    $logsList.appendChild(empty);
+    return;
+  }
+
+  for (const log of filtered) {
       const row = document.createElement('div');
       row.className = 'log-row';
 
@@ -389,11 +419,8 @@ async function loadLogsList() {
       });
       actions.appendChild(delBtn);
 
-      row.appendChild(actions);
-      $logsList.appendChild(row);
-    }
-  } catch (err) {
-    console.error('Failed to load logs:', err);
+    row.appendChild(actions);
+    $logsList.appendChild(row);
   }
 }
 
@@ -491,6 +518,7 @@ async function rehydrateSessionFromLog(sessionId) {
     if (entry.type === 'user_message') {
       flushAssistant();
       session.messages.push({ role: 'user', text: entry.text, attachments: null });
+      session.lastUserTurn = { text: entry.text, attachments: null };
       continue;
     }
 
@@ -849,6 +877,7 @@ function handleClaudeEvent(session, event) {
           model: event.model || null,
           mcpServers: Array.isArray(event.mcp_servers) ? event.mcp_servers : [],
           toolCount: Array.isArray(event.tools) ? event.tools.length : 0,
+          slashCommands: Array.isArray(event.slash_commands) ? event.slash_commands : [],
           slashCommandCount: Array.isArray(event.slash_commands) ? event.slash_commands.length : 0,
           skillCount: Array.isArray(event.skills) ? event.skills.length : 0,
           permissionMode: event.permissionMode || null,
@@ -1038,6 +1067,8 @@ function extractToolResultText(block) {
 
 function appendUserMessage(session, text, attachments) {
   session.messages.push({ role: 'user', text, attachments: attachments || null });
+  // Track the most recent user turn so the Retry button can resend it.
+  session.lastUserTurn = { text, attachments: attachments || null };
   if (session.id === state.activeId) {
     const el = document.createElement('div');
     el.className = 'msg msg-user';
@@ -1223,6 +1254,11 @@ function updateStatusUI() {
   $btnSend.classList.toggle('hidden', busy);
   $btnAbort.classList.toggle('hidden', !busy);
   $promptInput.disabled = busy;
+  // Retry is available only when idle and a prior user turn exists to resend.
+  const retryBtn = document.getElementById('btn-retry');
+  if (retryBtn) {
+    retryBtn.classList.toggle('hidden', busy || !session.lastUserTurn);
+  }
 
   if (busy) {
     $chatStatus.textContent = 'thinking...';
@@ -1340,6 +1376,90 @@ function autoResizeInput() {
   $promptInput.style.height = 'auto';
   $promptInput.style.height = Math.min($promptInput.scrollHeight, 200) + 'px';
 }
+
+// ---------------------------------------------------------------------------
+// Slash command autocomplete — appears when the composer starts with "/"
+// and the active session has slash_commands captured from the init event.
+// ---------------------------------------------------------------------------
+
+const $slashSuggest = document.getElementById('slash-suggest');
+let slashMatches = [];
+let slashSelected = 0;
+
+function updateSlashSuggest() {
+  const session = state.sessions.get(state.activeId);
+  const commands = session?.runtime?.slashCommands || [];
+  const raw = $promptInput.value;
+  // Only fire when the ENTIRE composer is a single line starting with /
+  // and we have commands to suggest.
+  if (!raw.startsWith('/') || raw.includes('\n') || commands.length === 0) {
+    hideSlashSuggest();
+    return;
+  }
+  const query = raw.slice(1).toLowerCase();
+  slashMatches = commands
+    .filter((cmd) => cmd.toLowerCase().includes(query))
+    .slice(0, 10);
+  if (slashMatches.length === 0) {
+    hideSlashSuggest();
+    return;
+  }
+  slashSelected = Math.min(slashSelected, slashMatches.length - 1);
+  $slashSuggest.replaceChildren();
+  slashMatches.forEach((cmd, i) => {
+    const li = document.createElement('li');
+    li.textContent = '/' + cmd;
+    if (i === slashSelected) li.classList.add('active');
+    // Use mousedown so it fires before the textarea blurs and hides the menu.
+    li.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      applySlashMatch(i);
+    });
+    $slashSuggest.appendChild(li);
+  });
+  $slashSuggest.classList.remove('hidden');
+}
+
+function hideSlashSuggest() {
+  slashMatches = [];
+  slashSelected = 0;
+  $slashSuggest.classList.add('hidden');
+}
+
+function applySlashMatch(index) {
+  const cmd = slashMatches[index];
+  if (!cmd) return;
+  $promptInput.value = '/' + cmd + ' ';
+  hideSlashSuggest();
+  $promptInput.focus();
+}
+
+$promptInput.addEventListener('input', updateSlashSuggest);
+
+// Keyboard navigation for the slash menu. Only intercept when it's open.
+$promptInput.addEventListener('keydown', (e) => {
+  if (slashMatches.length === 0) return;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    slashSelected = (slashSelected + 1) % slashMatches.length;
+    updateSlashSuggest();
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    slashSelected = (slashSelected - 1 + slashMatches.length) % slashMatches.length;
+    updateSlashSuggest();
+  } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.ctrlKey && !e.metaKey)) {
+    e.preventDefault();
+    applySlashMatch(slashSelected);
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    hideSlashSuggest();
+  }
+});
+
+$promptInput.addEventListener('blur', () => {
+  // Small delay so mousedown on a suggestion can fire first.
+  setTimeout(hideSlashSuggest, 100);
+});
 
 $btnAbort.addEventListener('click', () => {
   if (state.activeId) {
@@ -1726,6 +1846,18 @@ async function handlePermissionRequest(artifact) {
     message: allow ? undefined : 'User denied via Sublight UI',
   });
 }
+
+document.getElementById('btn-retry').addEventListener('click', () => {
+  const session = state.sessions.get(state.activeId);
+  if (!session || session.status === 'busy' || !session.lastUserTurn) return;
+  const { text, attachments } = session.lastUserTurn;
+  // Append as a fresh user turn and dispatch — Claude will produce a new
+  // response from its current context rather than rewinding.
+  appendUserMessage(session, text, attachments);
+  send({ type: 'message', sessionId: state.activeId, text, attachments });
+  session.status = 'busy';
+  updateStatusUI();
+});
 
 document.getElementById('btn-artifacts').addEventListener('click', () => {
   state.artifactsVisible = !state.artifactsVisible;

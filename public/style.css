@@ -419,6 +419,23 @@ html, body {
 
 .log-actions button:hover { background: var(--bg-hover); }
 
+#logs-filter {
+  width: 100%;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-family: inherit;
+}
+
+#logs-filter:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .log-tag {
   font-size: 11px;
   padding: 2px 8px;
@@ -723,6 +740,33 @@ html, body {
 
 .tool-card.task-parent {
   border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+
+/* Slash command autocomplete */
+#slash-suggest {
+  list-style: none;
+  margin: 0 0 6px 0;
+  padding: 4px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-height: 220px;
+  overflow-y: auto;
+  font-size: 13px;
+}
+
+#slash-suggest li {
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+
+#slash-suggest li.active,
+#slash-suggest li:hover {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+  color: var(--accent);
 }
 
 #chat-actions {

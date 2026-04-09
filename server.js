@@ -93,11 +93,28 @@ function isLoopback(req) {
   return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
 }
 
+/**
+ * Append a line to logs/audit.ndjson. Records security-relevant events
+ * (auth failures, setup, token regen, idle sweeps). Swallows its own errors
+ * so logging can never break the request.
+ */
+const AUDIT_LOG_PATH = path.join(LOG_DIR, 'audit.ndjson');
+function audit(event, req) {
+  const entry = {
+    ts: new Date().toISOString(),
+    event,
+    ip: req?.socket?.remoteAddress || null,
+    ua: req?.headers?.['user-agent']?.slice(0, 200) || null,
+  };
+  fs.appendFile(AUDIT_LOG_PATH, JSON.stringify(entry) + '\n', () => {});
+}
+
 /** Returns true if authorized. Sends 401 and returns false otherwise. */
 function httpAuth(req, res) {
   if (!AUTH_TOKEN) return true;
   const token = req.headers.authorization?.replace('Bearer ', '') || req.query.token;
   if (!token || !timingSafeCompare(token, AUTH_TOKEN)) {
+    audit({ type: 'auth_failed', path: req.path, hadToken: !!token }, req);
     res.status(401).json({ error: 'Authentication required' });
     return false;
   }
@@ -159,6 +176,7 @@ app.post('/api/setup', (req, res) => {
   if (!settings.firstRun) {
     return res.status(403).json({ error: 'Setup already completed' });
   }
+  audit({ type: 'setup_completed' }, req);
   settings = saveSettings({
     firstRun: false,
     security: req.body.security || {},
@@ -203,11 +221,31 @@ app.post('/api/settings/regenerate-token', (req, res) => {
   }
   const newToken = crypto.randomUUID();
   settings = saveSettings({ token: newToken });
+  audit({ type: 'token_regenerated' }, req);
   res.json({ ok: true, token: newToken, restartRequired: true });
 });
 
 app.get('/auth-status', (_req, res) => {
   res.json({ required: AUTH_TOKEN !== null });
+});
+
+/** Read the last N audit entries. Newest last. */
+app.get('/api/audit', (req, res) => {
+  if (!httpAuth(req, res)) return;
+  try {
+    if (!fs.existsSync(AUDIT_LOG_PATH)) return res.json({ entries: [] });
+    const content = fs.readFileSync(AUDIT_LOG_PATH, 'utf-8');
+    const lines = content.split('\n').filter(Boolean);
+    const limit = Math.min(Number(req.query.limit) || 200, 1000);
+    const sliced = lines.slice(-limit);
+    const entries = [];
+    for (const line of sliced) {
+      try { entries.push(JSON.parse(line)); } catch { continue; }
+    }
+    res.json({ entries, totalLines: lines.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -274,7 +312,7 @@ app.get('/api/logs', (req, res) => {
   if (!httpAuth(req, res)) return;
   try {
     const files = fs.readdirSync(LOG_DIR)
-      .filter(f => f.endsWith('.ndjson'))
+      .filter(f => f.endsWith('.ndjson') && f !== 'audit.ndjson')
       .map(f => {
         // nosemgrep — f comes from readdirSync (server-controlled directory listing), not user input
         const full = path.join(LOG_DIR, f);
@@ -517,6 +555,7 @@ httpServer.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const token = url.searchParams.get('token');
     if (!token || !timingSafeCompare(token, AUTH_TOKEN)) {
+      audit({ type: 'ws_auth_failed', hadToken: !!token }, req);
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;

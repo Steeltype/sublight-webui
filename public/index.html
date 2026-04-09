@@ -79,6 +79,7 @@
           <span id="chat-status"></span>
           <span id="chat-runtime" class="hidden" title=""></span>
           <div id="chat-actions">
+            <button id="btn-retry" class="hidden" title="Resend the last user message">Retry</button>
             <button id="btn-save" title="Save session">Save</button>
             <button id="btn-artifacts" title="Toggle artifacts">Artifacts</button>
             <button id="btn-notes" title="Toggle notes">Notes</button>
@@ -102,6 +103,7 @@
         </div>
         <form id="input-bar">
           <div id="attachments-bar" class="hidden"></div>
+          <ul id="slash-suggest" class="hidden"></ul>
           <div id="input-row">
             <button type="button" id="btn-attach" title="Attach file or paste screenshot">+</button>
             <textarea id="prompt-input" placeholder="Write your message... (Ctrl+Enter to send, paste/drop images)" rows="3"></textarea>
@@ -156,6 +158,7 @@
         <span id="logs-storage" class="setting-value"></span>
       </div>
       <p class="logs-notice">Logs record full session transcripts (messages, tool use, errors) as NDJSON. They are stored locally and never sent anywhere.</p>
+      <input type="search" id="logs-filter" placeholder="Filter by name, cwd, date, or id..." autocomplete="off">
       <div id="logs-list"></div>
       <div id="logs-viewer" class="hidden">
         <div id="logs-viewer-header">
