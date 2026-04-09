@@ -39,7 +39,8 @@ Sublight is a web UI that wraps the Claude CLI via persistent stdin/stdout strea
 
 ## Security Notes
 
-- `--dangerously-skip-permissions` is passed when `permissionMode: 'bypass'` (currently hardcoded in frontend). This is intentional for the local-use case but should be made configurable.
+- `--dangerously-skip-permissions` is passed when the session's `permissionMode` is `'bypass'`. The user picks this per-session from the new-session dialog; the default comes from `settings.security.defaultPermissionMode`.
+- Non-bypass mode is a known-broken leg: Claude Code's permission prompts expect a TTY we don't have, so tool calls that would prompt just hang. We tried wiring `--permission-prompt-tool` to an MCP tool on `sublight-artifacts`, but Claude's validator for that flag only sees servers from the user's global Claude config, not ones loaded via `--mcp-config`. See README "Known Limitations".
 - `/local-file` endpoint serves images from any path on the filesystem (extension-allowlisted). Auth-gated but no path restriction beyond file type.
 - `browse_dir` endpoint lists directories for the folder picker. Read-only, auth-gated.
 - All HTML rendering goes through DOMPurify. No raw innerHTML with user/Claude content.

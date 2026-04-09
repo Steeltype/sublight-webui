@@ -133,8 +133,9 @@
         <span class="option-warning">Claude will have unrestricted file and shell access</span>
       </label>
       <p class="session-hint" id="session-bypass-hint">
-        Without bypass, tool calls that require permission will hang — Claude Code's
-        permission flow is not yet supported over this web interface.
+        Non-bypass sessions inherit your global Claude config, but tool calls that
+        would normally show a permission prompt will hang — there's no terminal here
+        to answer them. Enable "Skip permission prompts" for unattended work.
       </p>
       <div class="dialog-actions">
         <button type="button" id="dialog-cancel">Cancel</button>
