@@ -261,6 +261,51 @@ test('tool_use round-trip surfaces both the call and the result', async () => {
   ws.close();
 });
 
+test('session survives a WebSocket disconnect and can be re-attached', async () => {
+  // First connection — create a session and run a turn.
+  const first = openWs();
+  await first.opened;
+
+  send(first.ws, { type: 'new_session', cwd: REPO_ROOT, permissionMode: 'bypass' });
+  const created = await first.waitFor((m) => m.type === 'session_created');
+  const sessionId = created.sessionId;
+
+  send(first.ws, { type: 'message', sessionId, text: 'first' });
+  await first.waitFor((m) => m.type === 'stream_start');
+  await first.waitFor((m) => m.type === 'claude_event' && m.event?.type === 'result');
+  await first.waitFor((m) => m.type === 'stream_end');
+
+  // Drop the first connection. The server should NOT kill the process.
+  first.ws.close();
+  await new Promise((r) => setTimeout(r, 300));
+
+  // Second connection — list_sessions should see the orphan; attach and run
+  // another turn.
+  const second = openWs();
+  await second.opened;
+
+  send(second.ws, { type: 'list_sessions' });
+  const list = await second.waitFor((m) => m.type === 'session_list');
+  const found = list.sessions.find((s) => s.sessionId === sessionId);
+  assert.ok(found, 'expected the orphaned session to still be in the list');
+
+  send(second.ws, { type: 'attach_session', sessionId });
+  const attached = await second.waitFor((m) => m.type === 'session_attached');
+  assert.equal(attached.sessionId, sessionId);
+
+  // Now send a message on the reattached session. The stub Claude should
+  // still be alive (persistent process) and reply on the new socket.
+  send(second.ws, { type: 'message', sessionId, text: 'second' });
+  await second.waitFor((m) => m.type === 'stream_start');
+  const result = await second.waitFor(
+    (m) => m.type === 'claude_event' && m.event?.type === 'result',
+  );
+  assert.ok(result.event.result.includes('ECHO: second'));
+  await second.waitFor((m) => m.type === 'stream_end');
+
+  second.ws.close();
+});
+
 test('rate limit trips when messageRateLimitPerMin is exceeded', async () => {
   // We need a fresh server for this — we set rate limit via the settings
   // endpoint on the existing one.

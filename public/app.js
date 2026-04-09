@@ -744,6 +744,9 @@ function connect() {
     state.reconnectDelay = 1000;
     console.log('[ws] connected');
     send({ type: 'get_defaults' });
+    // Ask the server what's still alive. Any sessions the client doesn't
+    // already know about will be auto-rehydrated and reattached.
+    send({ type: 'list_sessions' });
   });
 
   ws.addEventListener('message', (evt) => {
@@ -824,6 +827,46 @@ function handleServerMessage(msg) {
         console.error('Failed to rehydrate session', err);
         appendError(session, `Failed to rehydrate chat history: ${err.message}`);
       });
+      break;
+    }
+
+    case 'session_list': {
+      // Fires on (re)connect. Any server-side session we don't already have
+      // in state is a reattach candidate — spin up a local shell, rehydrate
+      // from the log, and send attach_session to start receiving live events.
+      for (const s of msg.sessions || []) {
+        if (state.sessions.has(s.sessionId)) continue;
+        const session = {
+          id: s.sessionId,
+          cwd: s.cwd,
+          name: s.name || shortCwd(s.cwd),
+          messages: [],
+          status: s.status || 'idle',
+          streamingEl: null,
+          streamingText: '',
+          pendingToolCards: new Map(),
+          toolContainers: new Map(),
+          costUsd: null,
+        };
+        state.sessions.set(s.sessionId, session);
+        rehydrateSessionFromLog(s.sessionId).catch((err) => {
+          console.error('Failed to rehydrate session', err);
+        });
+        send({ type: 'attach_session', sessionId: s.sessionId });
+      }
+      renderSidebar();
+      // If we had no active session before (e.g. page just reloaded) and
+      // there's at least one session, switch to the first.
+      if (!state.activeId && msg.sessions?.length) {
+        switchSession(msg.sessions[0].sessionId);
+      }
+      break;
+    }
+
+    case 'session_attached': {
+      // Server confirms we're now the owner of an existing session. No
+      // visible state change — the rehydration fired alongside the
+      // attach_session request and will populate the chat.
       break;
     }
 

@@ -549,6 +549,18 @@ function sendJSON(ws, obj) {
   }
 }
 
+/**
+ * Route a message to whichever WebSocket is currently attached to this
+ * session. If nothing is attached (e.g. the browser is mid-reload), the
+ * message is silently dropped — the NDJSON log is the source of truth and
+ * a reconnecting client will rehydrate from there.
+ */
+function sendToSession(session, obj) {
+  if (session.ws && session.ws.readyState === session.ws.OPEN) {
+    sendJSON(session.ws, obj);
+  }
+}
+
 function killSession(session) {
   if (session.proc) {
     session.proc.kill('SIGTERM');
@@ -698,13 +710,13 @@ function ensureProcess(session, ws) {
         session.status = 'idle';
         session.lastActiveAt = Date.now();
         logToSession(session, { type: 'turn_end', event });
-        sendJSON(ws, { type: 'claude_event', sessionId: session.localId, event });
-        sendJSON(ws, { type: 'stream_end', sessionId: session.localId });
+        sendToSession(session, { type: 'claude_event', sessionId: session.localId, event });
+        sendToSession(session, { type: 'stream_end', sessionId: session.localId });
         continue;
       }
 
       logToSession(session, { type: 'claude_event', event });
-      sendJSON(ws, { type: 'claude_event', sessionId: session.localId, event });
+      sendToSession(session, { type: 'claude_event', sessionId: session.localId, event });
     }
   });
 
@@ -721,9 +733,9 @@ function ensureProcess(session, ws) {
 
     logToSession(session, { type: 'process_exit', code });
 
-    // If process died while busy, notify the client
+    // If process died while busy, notify the currently-attached client.
     if (wasBusy) {
-      sendJSON(ws, {
+      sendToSession(session, {
         type: 'stream_end',
         sessionId: session.localId,
         exitCode: code,
@@ -736,18 +748,22 @@ function ensureProcess(session, ws) {
     session.proc = null;
     session.status = 'error';
     logToSession(session, { type: 'error', message: err.message });
-    sendJSON(ws, { type: 'error', sessionId: session.localId, message: err.message });
+    sendToSession(session, { type: 'error', sessionId: session.localId, message: err.message });
   });
 }
 
 function sendMessage(session, text, ws, attachments) {
+  // Make sure the session points at the connection that's sending us work.
+  // This matters when a reattached client sends a message immediately after
+  // reconnecting — the stdout handler will route responses here.
+  session.ws = ws;
   ensureProcess(session, ws);
 
   // If spawn failed (e.g., `claude` not on PATH) the error handler already
   // nulled out session.proc and notified the client. Bail rather than crashing
   // on a null stdin.
   if (!session.proc?.stdin) {
-    sendJSON(ws, {
+    sendToSession(session, {
       type: 'error',
       sessionId: session.localId,
       message: 'Claude process is not running. Is the `claude` CLI installed and on PATH?',
@@ -759,7 +775,7 @@ function sendMessage(session, text, ws, attachments) {
   session.lastActiveAt = Date.now();
   logToSession(session, { type: 'user_message', text, hasAttachments: !!attachments?.length });
 
-  sendJSON(ws, { type: 'stream_start', sessionId: session.localId });
+  sendToSession(session, { type: 'stream_start', sessionId: session.localId });
 
   // Build content array — text + any image/file attachments
   let content;
@@ -793,11 +809,15 @@ wss.on('connection', (ws) => {
   const connSessions = getConnectionSessions(ws);
 
   ws.on('close', () => {
+    // Detach instead of killing — the process keeps running, the browser can
+    // reconnect and reattach. The NDJSON log is the source of truth for
+    // anything that happened while detached; on reattach the client fetches
+    // /api/logs/:id to catch up.
     for (const localId of connSessions) {
       const session = sessions.get(localId);
       if (session) {
         logToSession(session, { type: 'connection_closed' });
-        killSession(session);
+        if (session.ws === ws) session.ws = null;
       }
     }
     connSessions.clear();
@@ -839,6 +859,7 @@ wss.on('connection', (ws) => {
           artifactSecret: crypto.randomUUID(),
           mcpConfigPath: null,
           lastActiveAt: Date.now(),
+          ws, // currently attached connection
         };
         sessions.set(localId, session);
         connSessions.add(localId);
@@ -851,9 +872,15 @@ wss.on('connection', (ws) => {
 
       case 'message': {
         const session = sessions.get(msg.sessionId);
-        if (!session || !connSessions.has(msg.sessionId)) {
+        if (!session) {
           sendJSON(ws, { type: 'error', sessionId: msg.sessionId, message: 'Unknown session' });
           return;
+        }
+        // Auto-attach on first message after a reconnect so callers don't
+        // have to send attach_session first for the simple case.
+        if (!connSessions.has(msg.sessionId)) {
+          connSessions.add(msg.sessionId);
+          session.ws = ws;
         }
         if (session.status === 'busy') {
           sendJSON(ws, { type: 'error', sessionId: msg.sessionId, message: 'Session is busy — wait for the current response to finish' });
@@ -892,7 +919,7 @@ wss.on('connection', (ws) => {
 
       case 'abort': {
         const session = sessions.get(msg.sessionId);
-        if (session?.proc && connSessions.has(msg.sessionId)) {
+        if (session?.proc) {
           // Kill the process — it will be re-spawned on next message
           session.proc.kill('SIGTERM');
         }
@@ -946,6 +973,7 @@ wss.on('connection', (ws) => {
           artifactSecret: crypto.randomUUID(),
           mcpConfigPath: null,
           lastActiveAt: Date.now(),
+          ws,
         };
         sessions.set(safe, session);
         connSessions.add(safe);
@@ -965,7 +993,7 @@ wss.on('connection', (ws) => {
 
       case 'close_session': {
         const session = sessions.get(msg.sessionId);
-        if (session && connSessions.has(msg.sessionId)) {
+        if (session) {
           logToSession(session, { type: 'session_closed_by_user' });
           killSession(session);
           connSessions.delete(msg.sessionId);
@@ -975,16 +1003,55 @@ wss.on('connection', (ws) => {
       }
 
       case 'list_sessions': {
-        const list = [...connSessions]
-          .map(id => sessions.get(id))
-          .filter(Boolean)
-          .map(s => ({
-            sessionId: s.localId,
-            status: s.status,
-            cwd: s.cwd,
-            name: s.name,
-          }));
+        // Return every in-memory session so a reconnecting client can see
+        // what's available to re-attach. Each entry includes an `attached`
+        // flag that's true when this connection already owns it.
+        const list = [...sessions.values()].map((s) => ({
+          sessionId: s.localId,
+          status: s.status,
+          cwd: s.cwd,
+          name: s.name,
+          attached: connSessions.has(s.localId),
+          hasClient: !!s.ws,
+        }));
         sendJSON(ws, { type: 'session_list', sessions: list });
+        break;
+      }
+
+      case 'attach_session': {
+        // Re-link an existing in-memory session to this connection. Used
+        // after a browser reload or reconnect so the same Claude process
+        // continues streaming to the new socket.
+        const rawId = String(msg.sessionId || '');
+        const safe = rawId.replace(/[^a-f0-9-]/g, '');
+        if (!safe || safe !== rawId) {
+          sendJSON(ws, { type: 'error', message: 'Invalid session id' });
+          break;
+        }
+        const session = sessions.get(safe);
+        if (!session) {
+          sendJSON(ws, { type: 'error', message: 'Session not found' });
+          break;
+        }
+        // If another connection currently owns it, steal — there's only one
+        // user in this tool's trust model. The old socket will find its
+        // sends dropped (sendToSession checks readyState).
+        if (session.ws && session.ws !== ws && session.ws.readyState === session.ws.OPEN) {
+          // Evict the old connection's ownership marker so its ws.close
+          // handler doesn't null out session.ws for this new attachment.
+          const oldConn = connectionSessions.get(session.ws);
+          oldConn?.delete(safe);
+        }
+        session.ws = ws;
+        connSessions.add(safe);
+        sendJSON(ws, {
+          type: 'session_attached',
+          sessionId: safe,
+          cwd: session.cwd,
+          name: session.name,
+          status: session.status,
+          permissionMode: session.permissionMode,
+        });
         break;
       }
 
