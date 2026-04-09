@@ -2524,4 +2524,35 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Mobile sidebar drawer
+// ---------------------------------------------------------------------------
+// On narrow screens the sidebar is hidden by default and opens as a slide-in
+// drawer over the chat area. The scrim is a tappable backdrop that closes it.
+
+const $mobileNavBtn = document.getElementById('btn-mobile-nav');
+const $mobileScrim = document.getElementById('mobile-scrim');
+const $sidebarEl = document.getElementById('sidebar');
+
+function openMobileSidebar() {
+  $sidebarEl.classList.add('mobile-open');
+  $mobileScrim.classList.add('visible');
+}
+
+function closeMobileSidebar() {
+  $sidebarEl.classList.remove('mobile-open');
+  $mobileScrim.classList.remove('visible');
+}
+
+$mobileNavBtn.addEventListener('click', openMobileSidebar);
+$mobileScrim.addEventListener('click', closeMobileSidebar);
+
+// Tapping a session in the sidebar on mobile should also close the drawer —
+// we delegate via event bubbling since the list items are rendered dynamically.
+$sidebarEl.addEventListener('click', (e) => {
+  if (window.matchMedia('(max-width: 768px)').matches && e.target.closest('#session-list li')) {
+    closeMobileSidebar();
+  }
+});
+
 boot();

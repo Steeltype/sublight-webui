@@ -12,6 +12,11 @@
   <script src="vendor/purify.min.js"></script>
 </head>
 <body>
+  <!-- Mobile hamburger — shown only on narrow screens via CSS. -->
+  <button type="button" id="btn-mobile-nav" title="Open menu" aria-label="Open menu">☰</button>
+  <!-- Mobile scrim for the open sidebar — tapping closes it. -->
+  <div id="mobile-scrim"></div>
+
   <!-- ─── First-run setup screen ─────────────────────────────────── -->
   <div id="setup-screen" class="hidden">
     <div class="setup-card">
