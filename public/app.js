@@ -50,6 +50,7 @@ const $emptyState    = document.getElementById('empty-state');
 const $chatArea      = document.getElementById('chat-area');
 const $chatTitle     = document.getElementById('chat-title');
 const $chatStatus    = document.getElementById('chat-status');
+const $btnCopyCwd    = document.getElementById('btn-copy-cwd');
 const $chatRuntime   = document.getElementById('chat-runtime');
 const $messages      = document.getElementById('messages');
 const $inputBar      = document.getElementById('input-bar');
@@ -1353,6 +1354,7 @@ function renderChat() {
   $emptyState.classList.add('hidden');
   $chatArea.classList.remove('hidden');
   $chatTitle.textContent = session.name || 'Session';
+  $btnCopyCwd.title = session.cwd ? `Copy: ${session.cwd}` : 'No working directory';
   updateStatusUI();
   updateRuntimeStrip(session);
 
@@ -1506,7 +1508,15 @@ function updateStatusUI() {
   }
 
   if (busy) {
-    $chatStatus.textContent = 'thinking...';
+    $chatStatus.textContent = '';
+    const indicator = document.createElement('span');
+    indicator.className = 'working-indicator';
+    indicator.textContent = 'Working';
+    const dots = document.createElement('span');
+    dots.className = 'working-dots';
+    for (let i = 0; i < 3; i++) { const d = document.createElement('span'); d.textContent = '.'; dots.appendChild(d); }
+    indicator.appendChild(dots);
+    $chatStatus.appendChild(indicator);
   } else if (session.costUsd != null) {
     $chatStatus.textContent = `$${session.costUsd.toFixed(4)}`;
   } else {
@@ -1528,7 +1538,12 @@ function renderSidebar() {
     const nameSpan = document.createElement('span');
     nameSpan.className = 'session-name';
     nameSpan.textContent = session.name || 'Session';
-    if (session.status === 'busy') nameSpan.textContent += ' ...';
+    if (session.status === 'busy') {
+      const dots = document.createElement('span');
+      dots.className = 'sidebar-working-dots';
+      for (let i = 0; i < 3; i++) { const d = document.createElement('span'); d.textContent = '.'; dots.appendChild(d); }
+      nameSpan.appendChild(dots);
+    }
 
     // Double-click to rename
     nameSpan.addEventListener('dblclick', (e) => {
@@ -1752,6 +1767,15 @@ function buildMarkdownTranscript(session) {
 function safeFilename(name) {
   return (name || 'session').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 60);
 }
+
+$btnCopyCwd.addEventListener('click', () => {
+  const session = state.sessions.get(state.activeId);
+  if (!session?.cwd) return;
+  navigator.clipboard.writeText(session.cwd).then(() => {
+    $btnCopyCwd.title = 'Copied!';
+    setTimeout(() => { $btnCopyCwd.title = 'Copy working directory path'; }, 1500);
+  });
+});
 
 document.getElementById('btn-save').addEventListener('click', () => {
   const session = state.sessions.get(state.activeId);
