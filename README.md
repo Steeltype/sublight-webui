@@ -131,6 +131,8 @@ Do not expose to the public internet without a reverse proxy, TLS, and additiona
 
 This project is not affiliated with, endorsed by, or supported by Anthropic, PBC. "Claude" and "Claude Code" are trademarks of Anthropic. Sublight wraps the locally-installed Claude CLI binary — it does not access the Claude API, extract OAuth tokens, or proxy subscription credentials. Users are responsible for complying with Anthropic's [Consumer Terms of Service](https://www.anthropic.com/legal/consumer-terms) and [Usage Policy](https://www.anthropic.com/legal/aup).
 
+If this project conflicts with Anthropic's terms or policies, please reach out before taking enforcement action — I'm happy to make changes or take it down. Open an issue or email the address on my [GitHub profile](https://github.com/tfujii).
+
 This software is provided under a proprietary license. See [LICENSE](LICENSE) for details.
 
 ## Development
