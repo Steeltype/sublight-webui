@@ -2,7 +2,7 @@
 
 A lightweight, self-hosted web interface for [Claude Code](https://claude.com/product/claude-code). Wraps persistent CLI sessions with a multi-session chat UI, artifact panel, and custom MCP tools.
 
-**This is a personal project, not a product.** It is not affiliated with, endorsed by, or commercially connected to Anthropic. It does not use the Claude API — it spawns the `claude` CLI binary that you install and authenticate yourself. No credentials are captured, stored, or proxied.
+**This is a personal project, not a product.** It is not affiliated with, endorsed by, or commercially connected to Anthropic. It does not use the Claude API — it spawns the unmodified `claude` CLI binary that you install and authenticate yourself. No OAuth tokens are extracted, intercepted, or proxied. No credentials are captured or stored. From Anthropic's servers, a Sublight session is indistinguishable from running `claude` in a terminal.
 
 ![Sublight WebUI — artifact panel with markdown, diff, and tool cards](assets/screenshot.jpeg)
 
