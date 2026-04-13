@@ -230,6 +230,12 @@ app.post('/api/settings/regenerate-token', (req, res) => {
   res.json({ ok: true, token: newToken, restartRequired: true });
 });
 
+app.post('/api/shutdown', (req, res) => {
+  if (!httpAuth(req, res)) return;
+  res.json({ ok: true });
+  shutdown('API');
+});
+
 app.get('/auth-status', (_req, res) => {
   res.json({ required: AUTH_TOKEN !== null });
 });

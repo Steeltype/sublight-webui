@@ -143,6 +143,8 @@ $authForm.addEventListener('submit', (e) => {
 // ---------------------------------------------------------------------------
 
 function showSetupScreen(token, securityDefaults) {
+  // Close any dialogs that may have been opened before boot() finished
+  document.querySelectorAll('dialog[open]').forEach(d => d.close());
   $setupScreen.classList.remove('hidden');
   $appShell.classList.add('hidden');
   $authScreen.classList.add('hidden');
@@ -312,6 +314,15 @@ document.getElementById('btn-regen-token').addEventListener('click', async () =>
 
 document.getElementById('settings-cancel').addEventListener('click', () => {
   $settingsDialog.close();
+});
+
+document.getElementById('btn-shutdown').addEventListener('click', async () => {
+  $settingsDialog.close();
+  if (!await confirm('Shut down the Sublight server? All sessions will be terminated.')) return;
+  try {
+    await authFetch('/api/shutdown', { method: 'POST' });
+  } catch { /* connection will drop */ }
+  document.body.textContent = 'Server shut down.';
 });
 
 document.getElementById('settings-form').addEventListener('submit', async (e) => {
@@ -2549,6 +2560,9 @@ function consumeAttachments() {
 // ---------------------------------------------------------------------------
 // Boot — check for first-run setup, then auth
 // ---------------------------------------------------------------------------
+
+// Close any dialogs the browser may have restored via bfcache / form state.
+document.querySelectorAll('dialog[open]').forEach(d => d.close());
 
 async function boot() {
   try {

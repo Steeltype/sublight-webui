@@ -313,6 +313,9 @@ html, body {
   max-width: 600px;
   width: 90vw;
   max-height: 80vh;
+}
+
+#logs-dialog[open] {
   display: flex;
   flex-direction: column;
 }

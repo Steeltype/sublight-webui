@@ -61,7 +61,7 @@
   </div>
 
   <!-- ─── App shell ─────────────────────────────────────────────── -->
-  <div id="app-shell">
+  <div id="app-shell" class="hidden">
     <aside id="sidebar">
       <div class="sidebar-header">
         <h1>Sublight</h1>
@@ -275,6 +275,8 @@
       </section>
 
       <div class="dialog-actions">
+        <button type="button" id="btn-shutdown" class="danger-btn">Shut Down Server</button>
+        <span style="flex:1"></span>
         <button type="button" id="settings-cancel">Cancel</button>
         <button type="submit" id="settings-save">Save</button>
       </div>
