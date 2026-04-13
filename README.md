@@ -1,37 +1,14 @@
 # Sublight WebUI
 
-A lightweight web interface for Claude CLI that wraps persistent Claude Code sessions with a multi-session chat UI, artifact panel, and custom MCP tools.
+A lightweight, self-hosted web interface for [Claude Code](https://claude.com/product/claude-code). Wraps persistent CLI sessions with a multi-session chat UI, artifact panel, and custom MCP tools.
+
+**This is a personal project, not a product.** It is not affiliated with, endorsed by, or commercially connected to Anthropic. It does not use the Claude API — it spawns the `claude` CLI binary that you install and authenticate yourself. No credentials are captured, stored, or proxied.
 
 ![Sublight WebUI — artifact panel with markdown, diff, and tool cards](assets/screenshot.jpeg)
 
 ![Image generation via SwarmUI displayed in artifact panel](assets/screenshot-image-gen.jpeg)
 
-## Quick Start
-
-```bash
-npm install
-cp .env.example .env      # edit with your token
-npm start
-```
-
-Open `http://localhost:3700` in your browser.
-
-## Configuration
-
-Copy `.env.example` to `.env` and edit:
-
-```bash
-# Required for network access — set a secret token
-SUBLIGHT_TOKEN=your-secret-here
-
-# Bind address (default: 0.0.0.0 for LAN access)
-HOST=0.0.0.0
-
-# Port (default: 3700)
-PORT=3700
-```
-
-## Architecture
+## How It Works
 
 ```
 Browser <--WebSocket--> Sublight Server <--stdin/stdout--> Claude CLI (persistent)
@@ -39,25 +16,53 @@ Browser <--WebSocket--> Sublight Server <--stdin/stdout--> Claude CLI (persisten
                               +<-- POST /artifact --<-- MCP artifact server
 ```
 
-Each session spawns **one persistent Claude process** using `--input-format stream-json --output-format stream-json`. Messages are written to stdin, responses stream from stdout. The process stays alive across turns — no context reload, no re-spawn, significantly lower token cost per turn.
+Sublight is a local process wrapper, not an API client. Each session spawns **one persistent Claude process** using `--input-format stream-json --output-format stream-json`. Messages are written to stdin, responses stream from stdout. The process stays alive across turns — no context reload, no re-spawn.
 
-A custom MCP server (`artifact-mcp.js`) is injected via `--mcp-config` alongside existing project/global MCP servers. It gives Claude tools to push artifacts, images, diffs, and notifications to the browser.
+A custom MCP server (`artifact-mcp.js`) is injected via `--mcp-config` alongside your existing project/global MCP servers. It gives Claude tools to push artifacts, images, diffs, and notifications to the browser.
+
+**You must have the Claude CLI installed and authenticated before using Sublight.** This tool does not handle authentication — it relies entirely on your local `claude` installation and whatever subscription or credentials you've already configured.
+
+## Quick Start
+
+```bash
+npm install
+npm start
+```
+
+Open `http://localhost:3700` in your browser. On first run, a setup screen will generate an access token and let you configure security defaults.
+
+## Configuration
+
+Settings are managed through the in-app Settings dialog. You can also set environment variables in `.env`:
+
+```bash
+# Access token (auto-generated on first run if not set)
+SUBLIGHT_TOKEN=your-secret-here
+
+# Bind address (default: 127.0.0.1, localhost only)
+HOST=127.0.0.1
+
+# Port (default: 3700)
+PORT=3700
+```
 
 ## Features
 
 ### Sessions
-- Create multiple concurrent sessions, each with its own Claude process
-- Set working directory per session (with autocomplete from recent/open/filesystem)
+- Multiple concurrent sessions, each with its own Claude process
+- Working directory per session (with filesystem autocomplete)
+- Sessions survive browser refresh — reconnect to running processes
 - Rename sessions (double-click in sidebar)
-- Export conversations to markdown
+- Export as markdown or full bundle (transcript + artifacts + raw log)
 - Session logs saved as NDJSON in `logs/`
 
 ### Chat
 - Multi-line input (Enter = newline, Ctrl+Enter = send)
 - Streaming responses with markdown rendering and syntax highlighting
-- Collapsible thinking blocks (purple) and tool use cards (blue)
+- Collapsible thinking blocks and tool use cards with subagent nesting
 - File attachments: click +, Ctrl+V paste screenshots, or drag-and-drop images
 - Multimodal — attached images sent to Claude as base64 for vision analysis
+- Command palette (Ctrl+K) for quick session switching
 
 ### Artifact Panel
 Claude has 9 MCP tools to push content to a side panel:
@@ -81,36 +86,31 @@ Artifacts are individually exportable (hover to reveal Save button).
 - Multiple note cards per session, auto-saved to localStorage
 - Not sent to Claude — private working memory for the user
 
-## Security Warnings
+## Security
 
-**This is a local development tool, not a production web application.** Understand these caveats before running it:
+**This is a local development tool, not a production web application.** Security defaults are restrictive (localhost-only, auth required, file scoping enabled), but understand these characteristics:
 
-- **Sessions inherit your global Claude config.** Sublight spawns the `claude` CLI as a child process, so whatever MCP servers, plugins, hooks, allowed-tools rules, and permissions live in your `~/.claude.json` come along for the ride. Sublight's own MCP server (`sublight-artifacts`) is added on top via `--mcp-config`. If Claude is authorized to do something in your terminal, it is authorized to do it from a Sublight session.
+- **Sessions inherit your global Claude config.** Sublight spawns the `claude` CLI as a child process, so whatever MCP servers, plugins, hooks, and permissions live in your `~/.claude.json` come along. If Claude is authorized to do something in your terminal, it can do it from a Sublight session.
 
-- **Per-session permission mode is your call.** The new-session dialog lets you pick between "skip permission prompts" (passes `--dangerously-skip-permissions`) and the default mode. Skip-permissions runs Claude unrestricted on the session's working directory. Only point it at directories you trust.
+- **Per-session permission mode.** The new-session dialog lets you choose between "skip permission prompts" (`--dangerously-skip-permissions`) and the default restricted mode.
 
-- **`/local-file` serves images from any filesystem path.** The endpoint is restricted to image file extensions (.png, .jpg, etc.) and requires auth, but there is no directory allowlist. Any authenticated user can request any image file on the server's filesystem.
+- **File serving is scoped by default.** The `/local-file` endpoint (used for artifact image display) is restricted to image extensions, requires auth, and is scoped to active session directories. Path traversal is blocked unconditionally.
 
-- **`/browse_dir` lists directories on the server.** The folder picker's autocomplete can enumerate directories anywhere on the filesystem. Auth-gated but not path-restricted.
+- **Single shared token for auth.** Not a multi-user system. Anyone with the token has full access to all sessions.
 
-- **Single shared token for auth.** Authentication is a single bearer token, stored in `settings.json` or pinned via `.env`. Not a multi-user system. Anyone with the token has full access to all sessions.
-
-- **No TLS.** The server runs plain HTTP/WS. If you expose it beyond localhost, use a reverse proxy with TLS (nginx, Caddy, etc.).
-
-- **`open_url` requires user confirmation** but other sublight-artifacts MCP tools (show_image, show_markdown, show_diff, notify, etc.) execute without prompting. Claude can push arbitrary images, code, and markdown to the artifact panel automatically.
+- **No TLS.** Runs plain HTTP/WS. Use a reverse proxy with TLS if exposing beyond localhost.
 
 ### Known Limitations
 
-- **Non-bypass sessions hang on tools that require a permission prompt.** Claude Code's interactive permission flow expects a terminal that Sublight doesn't give it. We attempted to route prompts through a `--permission-prompt-tool` MCP tool, but Claude Code's validator for that flag only inspects servers from the user's global Claude config — not servers loaded via `--mcp-config`, which is how Sublight provides its own tools. Until upstream lifts that restriction (or we register `sublight-artifacts` in the global config), non-bypass sessions silently block on any tool call that would normally ask for permission. If you need unattended tool execution, use "skip permission prompts" when creating a session.
+- **Non-bypass sessions hang on permission prompts.** Claude Code's interactive permission flow expects a terminal. Use "skip permission prompts" or configure an allowed-tools list when creating a session.
 
-- **Sessions are in-memory but logs persist.** If the server restarts, active WebSocket sessions drop. The NDJSON transcripts in `logs/` remain, and the Sessions Logs → Resume button will reopen them via `claude --resume`, lazily re-spawning the child process on the next message.
+- **Sessions are in-memory but logs persist.** Server restarts drop active sessions. NDJSON transcripts in `logs/` remain and can be resumed.
 
 ### Recommended Deployment
 
 For local-only use (single machine):
 ```bash
 HOST=127.0.0.1
-SUBLIGHT_TOKEN=  # optional when localhost-only
 ```
 
 For LAN access (trusted network):
@@ -127,10 +127,17 @@ Do not expose to the public internet without a reverse proxy, TLS, and additiona
 - [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
 - Claude CLI must be in PATH
 
+## Legal
+
+This project is not affiliated with, endorsed by, or supported by Anthropic, PBC. "Claude" and "Claude Code" are trademarks of Anthropic. Sublight wraps the locally-installed Claude CLI binary — it does not access the Claude API, extract OAuth tokens, or proxy subscription credentials. Users are responsible for complying with Anthropic's [Consumer Terms of Service](https://www.anthropic.com/legal/consumer-terms) and [Usage Policy](https://www.anthropic.com/legal/aup).
+
+This software is provided under a proprietary license. See [LICENSE](LICENSE) for details.
+
 ## Development
 
 ```bash
 npm run dev    # auto-restart on file changes
+npm test       # run test suite (27 tests)
 ```
 
 ## File Structure
@@ -139,10 +146,13 @@ npm run dev    # auto-restart on file changes
 sublight-webui/
 ├── server.js           # Express + WebSocket server, persistent process management
 ├── artifact-mcp.js     # MCP server with 9 tools for browser artifact display
+├── lib/logMeta.js      # NDJSON log parser
 ├── public/
 │   ├── index.html      # SPA shell
 │   ├── app.js          # Frontend logic (sessions, streaming, artifacts, attachments)
-│   └── style.css       # Dark theme
+│   ├── style.css       # Dark theme
+│   └── vendor/         # Vendored libraries (see vendor/LICENSES.md)
+├── tests/              # Unit + integration + WebSocket tests
 ├── assets/             # Screenshots for README
 ├── logs/               # Per-session NDJSON logs (gitignored)
 ├── .env.example        # Configuration reference
