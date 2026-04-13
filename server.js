@@ -366,6 +366,11 @@ app.get('/local-file', (req, res) => {
     return res.status(400).send('Missing path');
   }
   const resolved = path.resolve(filePath); // nosemgrep
+  // Block path traversal: the resolved path must match the raw input once normalized.
+  // This catches ../ sequences, null bytes, and other canonicalization tricks.
+  if (resolved !== path.normalize(filePath)) {
+    return res.status(403).send('Path traversal denied');
+  }
   const ext = path.extname(resolved).toLowerCase();
   const allowed = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'];
   if (settings.security.serveSvg) allowed.push('.svg');
