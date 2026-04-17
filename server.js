@@ -42,6 +42,10 @@ const DEFAULT_SETTINGS = {
     // many days. 0 disables. audit.ndjson and logs for currently-live sessions
     // are never touched.
     maxLogAgeDays: 30,
+    // If non-empty, new/resumed session cwds must resolve to a path under one
+    // of these roots. Empty = no restriction (the operator picks any folder).
+    // Symlinks are resolved before the check so links can't escape.
+    allowedCwdRoots: [],
   },
 };
 
@@ -135,6 +139,56 @@ function isPathInSessionScope(filePath) {
     }
   }
   return false;
+}
+
+/**
+ * Validate a candidate session cwd before we hand it to spawn(). Resolves
+ * symlinks so we can't be redirected outside an allowed root via a symlink
+ * that points elsewhere. Returns { ok, resolved, error }.
+ *
+ * If settings.security.allowedCwdRoots is a non-empty array, the resolved
+ * path must sit under one of those roots. Empty array = no restriction
+ * (single-user default — the operator IS the user).
+ */
+function validateCwd(candidate) {
+  if (typeof candidate !== 'string' || !candidate.trim()) {
+    return { ok: false, error: 'cwd is required' };
+  }
+  if (!path.isAbsolute(candidate)) {
+    return { ok: false, error: 'cwd must be an absolute path' };
+  }
+  let resolved;
+  try {
+    resolved = fs.realpathSync(candidate);
+  } catch (err) {
+    return { ok: false, error: `cwd does not exist: ${candidate}` };
+  }
+  let stat;
+  try {
+    stat = fs.statSync(resolved);
+  } catch (err) {
+    return { ok: false, error: `cwd is not accessible: ${candidate}` };
+  }
+  if (!stat.isDirectory()) {
+    return { ok: false, error: `cwd is not a directory: ${candidate}` };
+  }
+  if (resolved === path.parse(resolved).root) {
+    return { ok: false, error: 'cwd must not be the filesystem root' };
+  }
+  const roots = Array.isArray(settings.security.allowedCwdRoots)
+    ? settings.security.allowedCwdRoots.filter((r) => typeof r === 'string' && r.trim())
+    : [];
+  if (roots.length) {
+    const under = roots.some((root) => {
+      let realRoot;
+      try { realRoot = fs.realpathSync(root); } catch { return false; }
+      return resolved === realRoot || resolved.startsWith(realRoot + path.sep);
+    });
+    if (!under) {
+      return { ok: false, error: `cwd is outside allowed roots: ${candidate}` };
+    }
+  }
+  return { ok: true, resolved };
 }
 
 // ---------------------------------------------------------------------------
@@ -693,6 +747,14 @@ function ensureProcess(session, ws) {
 
   session.proc = proc;
 
+  // Without this listener an EPIPE on stdin (Claude closed its end between
+  // our write and the kernel flushing) becomes an uncaught stream error and
+  // crashes the server. We log it and let the 'close' handler below run the
+  // normal recovery path.
+  proc.stdin.on('error', (err) => {
+    logToSession(session, { type: 'stdin_error', message: err.message });
+  });
+
   // NDJSON line buffer for stdout
   let stdoutBuf = '';
   proc.stdout.on('data', (chunk) => {
@@ -756,10 +818,23 @@ function ensureProcess(session, ws) {
   });
 
   proc.on('error', (err) => {
+    const wasBusy = session.status === 'busy';
     session.proc = null;
-    session.status = 'error';
+    // Reset to idle (not 'error') so the next user message can trigger a
+    // fresh spawn attempt via ensureProcess. Staying in a sticky 'error'
+    // state buys nothing — the next spawn will either succeed or hit the
+    // same failure and notify the client again.
+    session.status = 'idle';
     logToSession(session, { type: 'error', message: err.message });
     sendToSession(session, { type: 'error', sessionId: session.localId, message: err.message });
+    // Close out the in-flight stream so the UI's busy indicator clears.
+    if (wasBusy) {
+      sendToSession(session, {
+        type: 'stream_end',
+        sessionId: session.localId,
+        stderr: err.message,
+      });
+    }
   });
 }
 
@@ -772,8 +847,10 @@ function sendMessage(session, text, ws, attachments) {
 
   // If spawn failed (e.g., `claude` not on PATH) the error handler already
   // nulled out session.proc and notified the client. Bail rather than crashing
-  // on a null stdin.
-  if (!session.proc?.stdin) {
+  // on a null stdin. Also guard against a stdin that's been closed out from
+  // under us — write() on a non-writable stream would emit an 'error' event
+  // asynchronously instead of returning, and the user would get no feedback.
+  if (!session.proc?.stdin?.writable) {
     sendToSession(session, {
       type: 'error',
       sessionId: session.localId,
@@ -809,7 +886,24 @@ function sendMessage(session, text, ws, attachments) {
     message: { role: 'user', content },
     parent_tool_use_id: null,
   };
-  session.proc.stdin.write(JSON.stringify(userMessage) + '\n');
+  // Callback form so a write error (EPIPE, process died between the writable
+  // check above and the kernel write) surfaces instead of being swallowed.
+  // Node still buffers even when write() returns false, so we don't need to
+  // honor backpressure explicitly — just propagate errors.
+  session.proc.stdin.write(JSON.stringify(userMessage) + '\n', (err) => {
+    if (!err) return;
+    logToSession(session, { type: 'stdin_error', message: err.message });
+    const wasBusy = session.status === 'busy';
+    session.status = 'idle';
+    sendToSession(session, {
+      type: 'error',
+      sessionId: session.localId,
+      message: `Failed to deliver message to Claude: ${err.message}`,
+    });
+    if (wasBusy) {
+      sendToSession(session, { type: 'stream_end', sessionId: session.localId, stderr: err.message });
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -850,7 +944,12 @@ wss.on('connection', (ws) => {
           break;
         }
         const localId = crypto.randomUUID();
-        const cwd = msg.cwd || process.cwd();
+        const cwdCheck = validateCwd(msg.cwd || process.cwd());
+        if (!cwdCheck.ok) {
+          sendJSON(ws, { type: 'error', message: cwdCheck.error });
+          break;
+        }
+        const cwd = cwdCheck.resolved;
         const permissionMode = msg.permissionMode || settings.security.defaultPermissionMode;
         // allowedTools is an array of Claude tool-name patterns (e.g. "Read",
         // "Bash(git log *)"). Only honored in non-bypass mode — bypass already
@@ -966,17 +1065,19 @@ wss.on('connection', (ws) => {
           sendJSON(ws, { type: 'error', message: 'Log is marked closed — cannot resume' });
           break;
         }
-        if (!meta.cwd || !fs.existsSync(meta.cwd)) {
-          sendJSON(ws, { type: 'error', message: `Session cwd no longer exists: ${meta.cwd || '(unknown)'}` });
+        const resumeCwdCheck = validateCwd(meta.cwd || '');
+        if (!resumeCwdCheck.ok) {
+          sendJSON(ws, { type: 'error', message: `Cannot resume — ${resumeCwdCheck.error}` });
           break;
         }
+        const resumedCwd = resumeCwdCheck.resolved;
 
         const session = {
           localId: safe,
           claudeSession: meta.claudeSessionId,
           resumeFromClaudeSession: meta.claudeSessionId,
           proc: null,
-          cwd: meta.cwd,
+          cwd: resumedCwd,
           status: 'idle',
           name: meta.sessionName || null,
           permissionMode: meta.permissionMode || settings.security.defaultPermissionMode,
@@ -990,12 +1091,12 @@ wss.on('connection', (ws) => {
         connSessions.add(safe);
         // Re-open the log path so new events append to the existing file.
         initSessionLog(safe);
-        logToSession(session, { type: 'session_resumed', cwd: meta.cwd, permissionMode: session.permissionMode });
+        logToSession(session, { type: 'session_resumed', cwd: resumedCwd, permissionMode: session.permissionMode });
 
         sendJSON(ws, {
           type: 'session_restored',
           sessionId: safe,
-          cwd: meta.cwd,
+          cwd: resumedCwd,
           name: session.name,
           permissionMode: session.permissionMode,
         });

@@ -306,6 +306,57 @@ test('session survives a WebSocket disconnect and can be re-attached', async () 
   second.ws.close();
 });
 
+test('new_session rejects a cwd that does not exist', async () => {
+  const { ws, waitFor, opened } = openWs();
+  await opened;
+
+  send(ws, { type: 'new_session', cwd: '/nonexistent/path/for/sublight/test', permissionMode: 'bypass' });
+  const err = await waitFor((m) => m.type === 'error');
+  assert.match(err.message, /cwd does not exist/i);
+
+  ws.close();
+});
+
+test('new_session rejects a cwd that is a file, not a directory', async () => {
+  const { ws, waitFor, opened } = openWs();
+  await opened;
+
+  // package.json exists and is a file, not a directory — should be rejected.
+  send(ws, { type: 'new_session', cwd: join(REPO_ROOT, 'package.json'), permissionMode: 'bypass' });
+  const err = await waitFor((m) => m.type === 'error');
+  assert.match(err.message, /not a directory/i);
+
+  ws.close();
+});
+
+test('session recovers after Claude process crashes mid-turn', async () => {
+  const { ws, waitFor, opened } = openWs();
+  await opened;
+
+  send(ws, { type: 'new_session', cwd: REPO_ROOT, permissionMode: 'bypass' });
+  const created = await waitFor((m) => m.type === 'session_created');
+  const sessionId = created.sessionId;
+
+  // CRASH makes the fake claude exit(1) without emitting a result. The server
+  // must still close out the stream so the UI clears its busy indicator.
+  send(ws, { type: 'message', sessionId, text: 'CRASH' });
+  await waitFor((m) => m.type === 'stream_start');
+  const end = await waitFor((m) => m.type === 'stream_end' && m.sessionId === sessionId);
+  assert.equal(end.exitCode, 1);
+
+  // The next message must spawn a fresh process and round-trip normally —
+  // not bounce with "Session is busy" or a stale stdin error.
+  send(ws, { type: 'message', sessionId, text: 'after crash' });
+  await waitFor((m) => m.type === 'stream_start');
+  const result = await waitFor(
+    (m) => m.type === 'claude_event' && m.event?.type === 'result',
+  );
+  assert.ok(result.event.result.includes('ECHO: after crash'));
+  await waitFor((m) => m.type === 'stream_end');
+
+  ws.close();
+});
+
 test('rate limit trips when messageRateLimitPerMin is exceeded', async () => {
   // We need a fresh server for this — we set rate limit via the settings
   // endpoint on the existing one.
