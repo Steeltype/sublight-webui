@@ -817,10 +817,15 @@ function ensureProcess(session, ws) {
     }
   });
 
+  // Keep a small ring of the most recent stderr bytes so we can include it
+  // in the stream_end payload if Claude exits with an error. Bounded so a
+  // chatty child doesn't balloon memory.
+  const MAX_STDERR_TAIL_BYTES = 4096;
+  let stderrTail = '';
   proc.stderr.on('data', (chunk) => {
-    // Log stderr but don't surface to user unless process crashes
-    const text = chunk.toString().trim();
-    if (text) logToSession(session, { type: 'stderr', text });
+    const text = chunk.toString();
+    if (text.trim()) logToSession(session, { type: 'stderr', text: text.trim() });
+    stderrTail = (stderrTail + text).slice(-MAX_STDERR_TAIL_BYTES);
   });
 
   proc.on('close', (code) => {
@@ -831,12 +836,17 @@ function ensureProcess(session, ws) {
     logToSession(session, { type: 'process_exit', code });
 
     // If process died while busy, notify the currently-attached client.
+    // Include the stderr tail on non-zero exit so the user sees why Claude
+    // bailed instead of just "exit 1".
     if (wasBusy) {
+      const tail = stderrTail.trim();
       sendToSession(session, {
         type: 'stream_end',
         sessionId: session.localId,
         exitCode: code,
-        stderr: code !== 0 ? `Claude process exited with code ${code}` : undefined,
+        stderr: code !== 0
+          ? (tail ? `Claude exited with code ${code}: ${tail}` : `Claude process exited with code ${code}`)
+          : undefined,
       });
     }
   });
