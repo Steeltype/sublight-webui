@@ -66,9 +66,9 @@
       <div class="sidebar-header">
         <h1>Sublight</h1>
         <div class="sidebar-actions">
-          <button id="btn-logs" title="Session logs">&#128220;</button>
-          <button id="btn-settings" title="Settings">&#9881;</button>
-          <button id="btn-new-session" title="New session">+</button>
+          <button id="btn-logs" title="Session logs" aria-label="Session logs">&#128220;</button>
+          <button id="btn-settings" title="Settings" aria-label="Settings">&#9881;</button>
+          <button id="btn-new-session" title="New session" aria-label="New session">+</button>
         </div>
       </div>
       <ul id="session-list"></ul>
@@ -83,7 +83,7 @@
       <div id="chat-area" class="hidden">
         <div id="chat-header">
           <span id="chat-title"></span>
-          <button type="button" id="btn-copy-cwd" title="Copy working directory path">&#128203;</button>
+          <button type="button" id="btn-copy-cwd" title="Copy working directory path" aria-label="Copy working directory path">&#128203;</button>
           <span id="chat-status"></span>
           <span id="chat-runtime" class="hidden" title=""></span>
           <div id="chat-actions">
@@ -105,7 +105,7 @@
           <div id="notes-panel" class="hidden">
             <div id="notes-header">
               <span>Session Notes</span>
-              <button id="btn-add-note" title="Add note">+</button>
+              <button id="btn-add-note" title="Add note" aria-label="Add note">+</button>
             </div>
             <div id="notes-list"></div>
           </div>
@@ -114,7 +114,7 @@
           <div id="attachments-bar" class="hidden"></div>
           <ul id="slash-suggest" class="hidden"></ul>
           <div id="input-row">
-            <button type="button" id="btn-attach" title="Attach file or paste screenshot">+</button>
+            <button type="button" id="btn-attach" title="Attach file or paste screenshot" aria-label="Attach file or paste screenshot">+</button>
             <textarea id="prompt-input" placeholder="Write your message... (Ctrl+Enter to send, paste/drop images)" rows="3"></textarea>
             <div id="input-actions">
               <button type="submit" id="btn-send" title="Send (Ctrl+Enter)">Send</button>
