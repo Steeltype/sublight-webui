@@ -6,131 +6,19 @@ import fs from 'fs';
 import helmet from 'helmet';
 import { createServer } from 'http';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
+import { AUTH_TOKEN, audit, httpAuth, isLoopback, timingSafeCompare } from './lib/auth.js';
 import { parseLogMeta } from './lib/logMeta.js';
+import { ARTIFACT_MCP_PATH, AUDIT_LOG_PATH, LOG_DIR, REPO_ROOT } from './lib/paths.js';
+import { saveSettings, settings } from './lib/settings.js';
 
 config(); // load .env
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const LOG_DIR = path.join(__dirname, 'logs');
-const ARTIFACT_MCP_PATH = path.join(__dirname, 'artifact-mcp.js');
-const SETTINGS_PATH = path.join(__dirname, 'settings.json');
-
 fs.mkdirSync(LOG_DIR, { recursive: true });
 
-// ---------------------------------------------------------------------------
-// Settings — persisted to settings.json, managed via UI
-// ---------------------------------------------------------------------------
-
-const DEFAULT_SETTINGS = {
-  firstRun: true,
-  token: null,
-  host: '127.0.0.1',
-  port: 3700,
-  security: {
-    scopeFilesToSession: true,
-    serveSvg: false,
-    maxSessions: 10,
-    defaultPermissionMode: 'default',
-    // Kill Claude subprocesses that haven't had activity in this many minutes.
-    // 0 disables. Resuming the session via the UI re-spawns on next message.
-    idleTimeoutMinutes: 120,
-    // Max user messages per minute per WebSocket connection. 0 disables.
-    messageRateLimitPerMin: 30,
-    // Delete session NDJSON logs whose last-modified time is older than this
-    // many days. 0 disables. audit.ndjson and logs for currently-live sessions
-    // are never touched.
-    maxLogAgeDays: 30,
-    // If non-empty, new/resumed session cwds must resolve to a path under one
-    // of these roots. Empty = no restriction (the operator picks any folder).
-    // Symlinks are resolved before the check so links can't escape.
-    allowedCwdRoots: [],
-  },
-};
-
-function loadSettings() {
-  try {
-    const raw = fs.readFileSync(SETTINGS_PATH, 'utf-8');
-    const saved = JSON.parse(raw);
-    return {
-      ...DEFAULT_SETTINGS,
-      ...saved,
-      security: { ...DEFAULT_SETTINGS.security, ...(saved.security || {}) },
-    };
-  } catch {
-    // First run — create settings with a fresh token
-    const fresh = { ...DEFAULT_SETTINGS, token: crypto.randomUUID() };
-    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(fresh, null, 2));
-    return fresh;
-  }
-}
-
-function saveSettings(updates) {
-  const current = loadSettings();
-  const merged = {
-    ...current,
-    ...updates,
-    security: { ...current.security, ...(updates.security || {}) },
-  };
-  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(merged, null, 2));
-  return merged;
-}
-
-let settings = loadSettings();
-
 // .env overrides settings.json (backwards-compatible)
-const PORT = process.env.PORT || settings.port;
-const HOST = process.env.HOST || settings.host;
-const AUTH_TOKEN = process.env.SUBLIGHT_TOKEN || settings.token;
-
-// ---------------------------------------------------------------------------
-// Auth helpers
-// ---------------------------------------------------------------------------
-
-function timingSafeCompare(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string') return false;
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return crypto.timingSafeEqual(bufA, bufB);
-}
-
-/** True if the request came from the loopback interface. */
-function isLoopback(req) {
-  const ip = req.socket?.remoteAddress || '';
-  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
-}
-
-/**
- * Append a line to logs/audit.ndjson. Records security-relevant events
- * (auth failures, setup, token regen, idle sweeps). Swallows its own errors
- * so logging can never break the request.
- */
-const AUDIT_LOG_PATH = path.join(LOG_DIR, 'audit.ndjson');
-function audit(event, req) {
-  const entry = {
-    ts: new Date().toISOString(),
-    event,
-    ip: req?.socket?.remoteAddress || null,
-    ua: req?.headers?.['user-agent']?.slice(0, 200) || null,
-  };
-  fs.appendFile(AUDIT_LOG_PATH, JSON.stringify(entry) + '\n', (err) => {
-    if (err) console.error(`[audit] failed to write ${event.type || event}: ${err.message}`);
-  });
-}
-
-/** Returns true if authorized. Sends 401 and returns false otherwise. */
-function httpAuth(req, res) {
-  if (!AUTH_TOKEN) return true;
-  const token = req.headers.authorization?.replace('Bearer ', '') || req.query.token;
-  if (!token || !timingSafeCompare(token, AUTH_TOKEN)) {
-    audit({ type: 'auth_failed', path: req.path, hadToken: !!token }, req);
-    res.status(401).json({ error: 'Authentication required' });
-    return false;
-  }
-  return true;
-}
+const PORT = process.env.PORT || settings.current.port;
+const HOST = process.env.HOST || settings.current.host;
 
 /** Check if a file path falls under any active session's cwd. */
 function isPathInSessionScope(filePath) {
@@ -148,7 +36,7 @@ function isPathInSessionScope(filePath) {
  * symlinks so we can't be redirected outside an allowed root via a symlink
  * that points elsewhere. Returns { ok, resolved, error }.
  *
- * If settings.security.allowedCwdRoots is a non-empty array, the resolved
+ * If settings.current.security.allowedCwdRoots is a non-empty array, the resolved
  * path must sit under one of those roots. Empty array = no restriction
  * (single-user default — the operator IS the user).
  */
@@ -177,8 +65,8 @@ function validateCwd(candidate) {
   if (resolved === path.parse(resolved).root) {
     return { ok: false, error: 'cwd must not be the filesystem root' };
   }
-  const roots = Array.isArray(settings.security.allowedCwdRoots)
-    ? settings.security.allowedCwdRoots.filter((r) => typeof r === 'string' && r.trim())
+  const roots = Array.isArray(settings.current.security.allowedCwdRoots)
+    ? settings.current.security.allowedCwdRoots.filter((r) => typeof r === 'string' && r.trim())
     : [];
   if (roots.length) {
     const under = roots.some((root) => {
@@ -212,21 +100,21 @@ app.use(helmet({
 }));
 
 app.use(express.json({ limit: '1mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(REPO_ROOT, 'public')));
 
 // ---------------------------------------------------------------------------
 // Setup & settings API (no auth during first-run setup)
 // ---------------------------------------------------------------------------
 
 app.get('/api/setup-status', (req, res) => {
-  if (settings.firstRun) {
+  if (settings.current.firstRun) {
     // Only reveal the token to loopback callers. Remote callers (HOST=0.0.0.0
     // before first setup) get a flag and must read the token from the server
     // console, which prints it on first-run startup.
     if (isLoopback(req)) {
-      res.json({ setupRequired: true, token: AUTH_TOKEN, settings: settings.security });
+      res.json({ setupRequired: true, token: AUTH_TOKEN, settings: settings.current.security });
     } else {
-      res.json({ setupRequired: true, tokenOnConsole: true, settings: settings.security });
+      res.json({ setupRequired: true, tokenOnConsole: true, settings: settings.current.security });
     }
   } else {
     res.json({ setupRequired: false, authRequired: AUTH_TOKEN !== null });
@@ -234,11 +122,11 @@ app.get('/api/setup-status', (req, res) => {
 });
 
 app.post('/api/setup', (req, res) => {
-  if (!settings.firstRun) {
+  if (!settings.current.firstRun) {
     return res.status(403).json({ error: 'Setup already completed' });
   }
   audit({ type: 'setup_completed' }, req);
-  settings = saveSettings({
+  saveSettings({
     firstRun: false,
     security: req.body.security || {},
   });
@@ -256,16 +144,16 @@ app.get('/api/settings', (req, res) => {
       host: !!process.env.HOST,
       port: !!process.env.PORT,
     },
-    security: settings.security,
+    security: settings.current.security,
   });
 });
 
 app.post('/api/settings', (req, res) => {
   if (!httpAuth(req, res)) return;
   if (req.body.security) {
-    settings = saveSettings({ security: req.body.security });
+    saveSettings({ security: req.body.security });
   }
-  res.json({ ok: true, security: settings.security });
+  res.json({ ok: true, security: settings.current.security });
 });
 
 /**
@@ -281,7 +169,7 @@ app.post('/api/settings/regenerate-token', (req, res) => {
     });
   }
   const newToken = crypto.randomUUID();
-  settings = saveSettings({ token: newToken });
+  saveSettings({ token: newToken });
   audit({ type: 'token_regenerated' }, req);
   res.json({ ok: true, token: newToken, restartRequired: true });
 });
@@ -480,7 +368,7 @@ app.get('/local-file', (req, res) => {
   }
   const ext = path.extname(resolved).toLowerCase();
   const allowed = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'];
-  if (settings.security.serveSvg) allowed.push('.svg');
+  if (settings.current.security.serveSvg) allowed.push('.svg');
   if (!allowed.includes(ext)) {
     return res.status(403).send('File type not allowed');
   }
@@ -495,7 +383,7 @@ app.get('/local-file', (req, res) => {
   }
   // Scope check: when enabled, only serve files under active session directories.
   // We check the real (symlink-resolved) path so links can't escape scope.
-  if (settings.security.scopeFilesToSession && !isPathInSessionScope(realPath)) {
+  if (settings.current.security.scopeFilesToSession && !isPathInSessionScope(realPath)) {
     return res.status(403).send('Path outside session scope');
   }
   // Stream file directly — res.sendFile has issues with some Windows paths in Express 5.
@@ -645,10 +533,10 @@ function getConnectionSessions(ws) {
  * { ok: true } if the call is allowed, or { ok: false, retryMs } if the
  * connection has already sent `limit` messages in the last 60s.
  *
- * settings.security.messageRateLimitPerMin set to 0 disables the check.
+ * settings.current.security.messageRateLimitPerMin set to 0 disables the check.
  */
 function checkRateLimit(ws) {
-  const limit = settings.security.messageRateLimitPerMin || 0;
+  const limit = settings.current.security.messageRateLimitPerMin || 0;
   if (limit <= 0) return { ok: true };
   const now = Date.now();
   const windowStart = now - 60_000;
@@ -1011,8 +899,8 @@ wss.on('connection', (ws) => {
 
     switch (msg.type) {
       case 'new_session': {
-        if (sessions.size >= settings.security.maxSessions) {
-          sendJSON(ws, { type: 'error', message: `Session limit reached (max ${settings.security.maxSessions}). Close a session first.` });
+        if (sessions.size >= settings.current.security.maxSessions) {
+          sendJSON(ws, { type: 'error', message: `Session limit reached (max ${settings.current.security.maxSessions}). Close a session first.` });
           break;
         }
         const localId = crypto.randomUUID();
@@ -1022,7 +910,7 @@ wss.on('connection', (ws) => {
           break;
         }
         const cwd = cwdCheck.resolved;
-        const permissionMode = msg.permissionMode || settings.security.defaultPermissionMode;
+        const permissionMode = msg.permissionMode || settings.current.security.defaultPermissionMode;
         // allowedTools is an array of Claude tool-name patterns (e.g. "Read",
         // "Bash(git log *)"). Only honored in non-bypass mode — bypass already
         // disables all permission checks.
@@ -1115,8 +1003,8 @@ wss.on('connection', (ws) => {
           sendJSON(ws, { type: 'error', message: 'Session is already live — cannot resume' });
           break;
         }
-        if (sessions.size >= settings.security.maxSessions) {
-          sendJSON(ws, { type: 'error', message: `Session limit reached (max ${settings.security.maxSessions})` });
+        if (sessions.size >= settings.current.security.maxSessions) {
+          sendJSON(ws, { type: 'error', message: `Session limit reached (max ${settings.current.security.maxSessions})` });
           break;
         }
         const logPath = path.resolve(LOG_DIR, `${safe}.ndjson`);
@@ -1148,7 +1036,7 @@ wss.on('connection', (ws) => {
           cwd: resumedCwd,
           status: 'idle',
           name: meta.sessionName || null,
-          permissionMode: meta.permissionMode || settings.security.defaultPermissionMode,
+          permissionMode: meta.permissionMode || settings.current.security.defaultPermissionMode,
           allowedTools: meta.allowedTools || null,
           artifactSecret: crypto.randomUUID(),
           mcpConfigPath: null,
@@ -1239,7 +1127,7 @@ wss.on('connection', (ws) => {
         sendJSON(ws, {
           type: 'defaults',
           cwd: process.cwd(),
-          defaultPermissionMode: settings.security.defaultPermissionMode,
+          defaultPermissionMode: settings.current.security.defaultPermissionMode,
         });
         break;
       }
@@ -1310,7 +1198,7 @@ const IDLE_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 
 setInterval(() => {
   // Idle sweep: kill Claude subprocesses that have gone quiet.
-  const timeoutMinutes = settings.security.idleTimeoutMinutes || 0;
+  const timeoutMinutes = settings.current.security.idleTimeoutMinutes || 0;
   if (timeoutMinutes > 0) {
     const cutoff = Date.now() - timeoutMinutes * 60 * 1000;
     for (const session of [...sessions.values()]) {
@@ -1337,7 +1225,7 @@ setInterval(() => {
 
   // Log rotation: delete session NDJSON logs older than maxLogAgeDays.
   // Never touches audit.ndjson or logs for currently-live sessions.
-  const maxAgeDays = settings.security.maxLogAgeDays || 0;
+  const maxAgeDays = settings.current.security.maxLogAgeDays || 0;
   if (maxAgeDays > 0) {
     const ageCutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
     try {
@@ -1410,7 +1298,7 @@ httpServer.listen(PORT, HOST, () => {
   if (HOST === '0.0.0.0') {
     console.log('\x1b[33m⚠ Listening on all interfaces — accessible from your network\x1b[0m');
   }
-  if (settings.firstRun) {
+  if (settings.current.firstRun) {
     console.log('\x1b[36m→ First run — open the UI to complete setup\x1b[0m');
     if (AUTH_TOKEN) {
       console.log(`\x1b[36m→ Setup token: ${AUTH_TOKEN}\x1b[0m`);
