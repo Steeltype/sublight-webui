@@ -8,8 +8,17 @@ import { createServer } from 'http';
 import path from 'path';
 import { WebSocketServer } from 'ws';
 import { AUTH_TOKEN, audit, httpAuth, isLoopback, timingSafeCompare } from './lib/auth.js';
-import { parseLogMeta } from './lib/logMeta.js';
 import { ARTIFACT_MCP_PATH, AUDIT_LOG_PATH, LOG_DIR, REPO_ROOT } from './lib/paths.js';
+import { extractLogMeta, initSessionLog, logToSession } from './lib/sessionLog.js';
+import {
+  connectionMessageTimestamps,
+  connectionSessions,
+  getConnectionSessions,
+  sendJSON,
+  sendToSession,
+  sessionLogPaths,
+  sessions,
+} from './lib/sessionState.js';
 import { saveSettings, settings } from './lib/settings.js';
 
 config(); // load .env
@@ -206,15 +215,6 @@ app.get('/api/audit', (req, res) => {
 // ---------------------------------------------------------------------------
 // Log management API
 // ---------------------------------------------------------------------------
-
-/** Read a log file and extract metadata used for the logs list and resume flow. */
-function extractLogMeta(logPath) {
-  try {
-    return parseLogMeta(fs.readFileSync(logPath, 'utf-8'));
-  } catch {
-    return null;
-  }
-}
 
 app.get('/api/logs', (req, res) => {
   if (!httpAuth(req, res)) return;
@@ -464,25 +464,6 @@ const httpServer = createServer(app);
 // Session logging
 // ---------------------------------------------------------------------------
 
-const sessionLogPaths = new Map();
-
-function initSessionLog(localId) {
-  const safe = localId.replace(/[^a-f0-9-]/g, '');
-  const resolved = path.resolve(LOG_DIR, `${safe}.ndjson`);
-  if (!resolved.startsWith(path.resolve(LOG_DIR))) return null;
-  sessionLogPaths.set(localId, resolved);
-  return resolved;
-}
-
-function logToSession(session, entry) {
-  const logPath = sessionLogPaths.get(session.localId);
-  if (!logPath) return;
-  const line = JSON.stringify({ ts: new Date().toISOString(), ...entry });
-  fs.appendFile(logPath, line + '\n', (err) => {
-    if (err) console.error(`[log] failed to write to ${logPath}: ${err.message}`);
-  });
-}
-
 // ---------------------------------------------------------------------------
 // WebSocket server — with auth on upgrade
 // ---------------------------------------------------------------------------
@@ -509,24 +490,6 @@ httpServer.on('upgrade', (req, socket, head) => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Session state
-// ---------------------------------------------------------------------------
-
-const sessions = new Map();
-const connectionSessions = new WeakMap();
-/** Per-connection message timestamps for rate limiting (sliding 60s window). */
-const connectionMessageTimestamps = new WeakMap();
-
-function getConnectionSessions(ws) {
-  let set = connectionSessions.get(ws);
-  if (!set) {
-    set = new Set();
-    connectionSessions.set(ws, set);
-  }
-  return set;
-}
-
 /**
  * Sliding-window rate limiter, per WebSocket connection. Records the current
  * timestamp on success so successive calls deplete the allowance. Returns
@@ -551,24 +514,6 @@ function checkRateLimit(ws) {
   }
   stamps.push(now);
   return { ok: true };
-}
-
-function sendJSON(ws, obj) {
-  if (ws.readyState === ws.OPEN) {
-    ws.send(JSON.stringify(obj));
-  }
-}
-
-/**
- * Route a message to whichever WebSocket is currently attached to this
- * session. If nothing is attached (e.g. the browser is mid-reload), the
- * message is silently dropped — the NDJSON log is the source of truth and
- * a reconnecting client will rehydrate from there.
- */
-function sendToSession(session, obj) {
-  if (session.ws && session.ws.readyState === session.ws.OPEN) {
-    sendJSON(session.ws, obj);
-  }
 }
 
 function killSession(session) {
