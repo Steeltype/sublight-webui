@@ -388,6 +388,130 @@ test('/local-file rejects a symlink that escapes session scope', async () => {
   rmSync(outsideDir, { recursive: true, force: true });
 });
 
+test('new_session rejects non-bypass mode without an allowedTools list', async () => {
+  const { ws, waitFor, opened } = openWs();
+  await opened;
+
+  send(ws, { type: 'new_session', cwd: REPO_ROOT, permissionMode: 'default' });
+  const err = await waitFor((m) => m.type === 'error');
+  assert.match(err.message, /allowedTools/i);
+
+  ws.close();
+});
+
+test('browse_dir returns entries for a real directory and empty for unmatched prefix', async () => {
+  const { ws, waitFor, opened } = openWs();
+  await opened;
+
+  send(ws, { type: 'browse_dir', path: REPO_ROOT });
+  const real = await waitFor((m) => m.type === 'dir_listing');
+  assert.ok(Array.isArray(real.entries));
+  assert.ok(real.entries.length > 0, 'expected at least one subdir of the repo root');
+  for (const entry of real.entries) {
+    assert.ok(entry.startsWith(REPO_ROOT), `entry ${entry} should be under REPO_ROOT`);
+  }
+
+  // Prefix match path: a child that doesn't exist should return the parent's
+  // directories filtered by prefix. A deliberately-weird prefix returns [].
+  send(ws, { type: 'browse_dir', path: join(REPO_ROOT, 'zzz_nonexistent_prefix') });
+  const empty = await waitFor((m) => m.type === 'dir_listing');
+  assert.deepEqual(empty.entries, []);
+
+  ws.close();
+});
+
+test('resume_session rebuilds a session from an orphaned NDJSON log', async () => {
+  // Simulate the "server restarted mid-session" scenario: a log file exists
+  // in logs/ with session_created + a captured claude_session_id but no
+  // session_closed_by_user marker. resume_session should read it back and
+  // spin up a fresh live session with the same id.
+  const { randomUUID } = await import('node:crypto');
+  const logId = randomUUID();
+  const fakeClaudeSid = randomUUID();
+  const logLines = [
+    { ts: '2024-01-01T00:00:00.000Z', type: 'session_created', cwd: REPO_ROOT, permissionMode: 'bypass', allowedTools: null },
+    { ts: '2024-01-01T00:00:01.000Z', type: 'user_message', text: 'hi', hasAttachments: false },
+    { ts: '2024-01-01T00:00:02.000Z', type: 'claude_event', event: { type: 'system', subtype: 'init', session_id: fakeClaudeSid } },
+  ];
+  const logPath = join(REPO_ROOT, 'logs', `${logId}.ndjson`);
+  writeFileSync(logPath, logLines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+
+  try {
+    const { ws, waitFor, opened } = openWs();
+    await opened;
+
+    send(ws, { type: 'resume_session', logId });
+    const restored = await waitFor((m) => m.type === 'session_restored');
+    assert.equal(restored.sessionId, logId);
+    assert.equal(restored.cwd, REPO_ROOT);
+
+    // Run a message on the resumed session — a fresh fake-claude spawns and
+    // round-trips, proving the session is fully live.
+    send(ws, { type: 'message', sessionId: logId, text: 'after resume' });
+    await waitFor((m) => m.type === 'stream_start');
+    const result = await waitFor(
+      (m) => m.type === 'claude_event' && m.event?.type === 'result',
+    );
+    assert.ok(result.event.result.includes('ECHO: after resume'));
+    await waitFor((m) => m.type === 'stream_end');
+
+    // Clean up the resumed session so later tests don't trip maxSessions.
+    send(ws, { type: 'close_session', sessionId: logId });
+    await waitFor((m) => m.type === 'session_closed' && m.sessionId === logId);
+    ws.close();
+  } finally {
+    try { rmSync(logPath, { force: true }); } catch {}
+  }
+});
+
+test('GET /api/logs lists sessions and /api/logs/:id streams the NDJSON body', async () => {
+  // Stand up a session so there's definitely a log to find.
+  const { ws, waitFor, opened } = openWs();
+  await opened;
+  send(ws, { type: 'new_session', cwd: REPO_ROOT, permissionMode: 'bypass' });
+  const created = await waitFor((m) => m.type === 'session_created');
+  const sessionId = created.sessionId;
+  send(ws, { type: 'message', sessionId, text: 'for log test' });
+  await waitFor((m) => m.type === 'stream_end');
+
+  // Unauthenticated → 401.
+  const unauth = await fetch(`${baseUrl}/api/logs`);
+  assert.equal(unauth.status, 401);
+
+  // Auth → list with our id present.
+  const listRes = await fetch(`${baseUrl}/api/logs`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  assert.equal(listRes.status, 200);
+  const listBody = await listRes.json();
+  assert.ok(Array.isArray(listBody.logs));
+  const entry = listBody.logs.find((l) => l.id === sessionId);
+  assert.ok(entry, 'expected the newly-created session in the logs list');
+  assert.equal(entry.live, true);
+
+  // Stream the body of /api/logs/:id — should be NDJSON we can parse.
+  const bodyRes = await fetch(`${baseUrl}/api/logs/${sessionId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  assert.equal(bodyRes.status, 200);
+  assert.match(bodyRes.headers.get('content-type') || '', /ndjson/);
+  const text = await bodyRes.text();
+  const lines = text.split('\n').filter(Boolean);
+  assert.ok(lines.length > 0);
+  for (const line of lines) {
+    JSON.parse(line); // throws on malformed NDJSON
+  }
+
+  // Nonexistent id → 404.
+  const missing = await fetch(
+    `${baseUrl}/api/logs/00000000-0000-0000-0000-000000000000`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  assert.equal(missing.status, 404);
+
+  ws.close();
+});
+
 test('rate limit trips when messageRateLimitPerMin is exceeded', async () => {
   // We need a fresh server for this — we set rate limit via the settings
   // endpoint on the existing one.
