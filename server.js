@@ -115,7 +115,9 @@ function audit(event, req) {
     ip: req?.socket?.remoteAddress || null,
     ua: req?.headers?.['user-agent']?.slice(0, 200) || null,
   };
-  fs.appendFile(AUDIT_LOG_PATH, JSON.stringify(entry) + '\n', () => {});
+  fs.appendFile(AUDIT_LOG_PATH, JSON.stringify(entry) + '\n', (err) => {
+    if (err) console.error(`[audit] failed to write ${event.type || event}: ${err.message}`);
+  });
 }
 
 /** Returns true if authorized. Sends 401 and returns false otherwise. */
@@ -1332,15 +1334,30 @@ setInterval(() => {
 // Graceful shutdown — kill all child processes
 // ---------------------------------------------------------------------------
 
+let shuttingDown = false;
 function shutdown(signal) {
+  if (shuttingDown) return; // ignore a second Ctrl-C
+  shuttingDown = true;
   console.log(`\n${signal} received — shutting down`);
+
+  // First pass: polite SIGTERM so Claude can flush its log and exit cleanly.
   for (const session of sessions.values()) {
-    if (session.proc) {
-      session.proc.kill('SIGTERM');
-    }
+    if (session.proc) session.proc.kill('SIGTERM');
   }
+
+  // Second pass at t+3s: SIGKILL anything that ignored SIGTERM. Without this,
+  // a stuck child can survive our hard-exit timer and become an orphan.
+  setTimeout(() => {
+    for (const session of sessions.values()) {
+      if (session.proc && session.proc.exitCode === null) {
+        try { session.proc.kill('SIGKILL'); } catch {}
+      }
+    }
+  }, 3000).unref();
+
   httpServer.close(() => process.exit(0));
-  setTimeout(() => process.exit(1), 5000);
+  // Last-resort exit if httpServer.close() never calls back (hung connections).
+  setTimeout(() => process.exit(1), 5000).unref();
 }
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
