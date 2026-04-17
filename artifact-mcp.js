@@ -160,54 +160,6 @@ server.tool(
   },
 );
 
-// ---------------------------------------------------------------------------
-// Permission prompt — wired to Claude via --permission-prompt-tool
-// ---------------------------------------------------------------------------
-//
-// When Claude needs to confirm a tool call, it invokes this tool with the
-// requested tool_name + input. We bounce the request to the Sublight server,
-// which forwards it to the browser, shows a modal, and waits for the user's
-// decision. The tool must return a JSON text block with shape:
-//   { behavior: "allow", updatedInput: <original or edited input> }
-//   { behavior: "deny",  message: "<reason>" }
-
-server.tool(
-  'permission_prompt',
-  'Internal: Sublight WebUI permission prompt handler. Not called directly by users.',
-  {
-    tool_name: z.string(),
-    input: z.record(z.any()),
-    tool_use_id: z.string().optional(),
-  },
-  async ({ tool_name, input, tool_use_id }) => {
-    const result = await postArtifact({
-      type: 'permission_request',
-      toolName: tool_name,
-      input,
-      toolUseId: tool_use_id || null,
-    });
-
-    // Server returns { behavior, updatedInput?, message? } after the user decides.
-    let decision;
-    if (result && (result.behavior === 'allow' || result.behavior === 'deny')) {
-      decision = {
-        behavior: result.behavior,
-        updatedInput: result.behavior === 'allow' ? (result.updatedInput || input) : undefined,
-        message: result.behavior === 'deny' ? (result.message || 'User denied permission in Sublight UI') : undefined,
-      };
-    } else {
-      // Error path (timeout, server down, transport failure) — fail closed.
-      decision = {
-        behavior: 'deny',
-        message: result?.error || 'Sublight permission prompt failed — denying by default',
-      };
-    }
-    // Strip undefined fields before serializing.
-    const payload = Object.fromEntries(Object.entries(decision).filter(([, v]) => v !== undefined));
-    return { content: [{ type: 'text', text: JSON.stringify(payload) }] };
-  },
-);
-
 server.tool(
   'show_markdown',
   'Render a full markdown document in the artifact panel. Supports headings, lists, code blocks, tables, and other standard markdown. Use for generated documentation, READMEs, reports, etc.',

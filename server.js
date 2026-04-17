@@ -473,35 +473,6 @@ app.post('/artifact', (req, res) => {
     session.name = artifact.name;
   }
 
-  // For permission_request, we forward to browser and wait for the user's
-  // allow/deny decision. The MCP permission_prompt tool expects { behavior,
-  // updatedInput?, message? } back so it can hand the right JSON to Claude.
-  if (artifact.type === 'permission_request') {
-    const requestId = crypto.randomUUID();
-    artifact.requestId = requestId;
-
-    const timeout = setTimeout(() => {
-      pendingPermissionRequests.delete(requestId);
-      res.json({ behavior: 'deny', message: 'Permission prompt timed out after 120s' });
-    }, 120000);
-
-    pendingPermissionRequests.set(requestId, {
-      resolve: (decision) => {
-        clearTimeout(timeout);
-        pendingPermissionRequests.delete(requestId);
-        res.json(decision);
-      },
-    });
-
-    const event = { type: 'artifact', sessionId, artifact };
-    for (const ws of wss.clients) {
-      const connSet = connectionSessions.get(ws);
-      if (connSet?.has(sessionId)) sendJSON(ws, event);
-    }
-    logToSession(session, { type: 'artifact', artifact });
-    return;
-  }
-
   // For open_url, we forward to browser and wait for the user's response
   // via a pending promise. The browser sends back { opened: true/false }.
   if (artifact.type === 'open_url') {
@@ -547,9 +518,6 @@ app.post('/artifact', (req, res) => {
 
 /** Pending open_url requests awaiting user confirmation */
 const pendingUrlRequests = new Map();
-
-/** Pending permission_prompt requests awaiting user allow/deny */
-const pendingPermissionRequests = new Map();
 
 const httpServer = createServer(app);
 
@@ -733,21 +701,11 @@ function ensureProcess(session, ws) {
   if (session.permissionMode === 'bypass') {
     args.push('--dangerously-skip-permissions');
   } else if (Array.isArray(session.allowedTools) && session.allowedTools.length) {
-    // Static allowlist for non-bypass mode. Claude will run these without
-    // prompting and deny everything else. This is the practical workaround
-    // while the --permission-prompt-tool + --mcp-config interaction is
-    // broken upstream (see note below).
+    // Static allowlist for non-bypass mode: Claude runs listed tools without
+    // prompting and denies everything else. Interactive prompts don't work
+    // without a TTY, so this allowlist is the only supported non-bypass path.
     args.push('--allowedTools', ...session.allowedTools);
   }
-  // NOTE: we used to pass `--permission-prompt-tool mcp__sublight-artifacts__permission_prompt`
-  // here for non-bypass mode, but Claude Code's --permission-prompt-tool validator
-  // does NOT look at MCP servers loaded via --mcp-config. The validator only
-  // sees servers from the user's global Claude config, so the tool name is
-  // reported as not-found and the child process exits with code 1 on the first
-  // tool call. Until upstream supports --mcp-config-provided permission tools,
-  // non-bypass sessions will fall back to the Claude CLI's default behavior
-  // (waiting for tty input it can never receive). Users who need unattended
-  // execution should use bypass mode.
 
   // Inject our artifact MCP server alongside existing MCP configs
   const mcpConfigPath = writeMcpConfig(session);
@@ -1020,6 +978,17 @@ wss.on('connection', (ws) => {
         const allowedTools = Array.isArray(msg.allowedTools)
           ? msg.allowedTools.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim())
           : null;
+        // Non-bypass mode without a static allowlist will hang on the first tool
+        // call: Claude Code expects a TTY for its permission prompts and we have
+        // none. Fail fast at creation time instead of letting the user discover
+        // this mid-turn.
+        if (permissionMode !== 'bypass' && (!allowedTools || !allowedTools.length)) {
+          sendJSON(ws, {
+            type: 'error',
+            message: 'Non-bypass sessions require a non-empty allowedTools list. Tool prompts without a TTY will hang.',
+          });
+          break;
+        }
         const session = {
           localId,
           claudeSession: null,
@@ -1230,17 +1199,6 @@ wss.on('connection', (ws) => {
         if (pending) {
           pending.resolve(msg.opened);
         }
-        break;
-      }
-
-      // ---- User response to permission_request allow/deny ----
-      case 'permission_response': {
-        const pending = pendingPermissionRequests.get(msg.requestId);
-        if (!pending) break;
-        const decision = msg.allow
-          ? { behavior: 'allow', updatedInput: msg.updatedInput || undefined }
-          : { behavior: 'deny', message: msg.message || 'User denied permission' };
-        pending.resolve(decision);
         break;
       }
 

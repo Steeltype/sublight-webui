@@ -92,7 +92,7 @@ Artifacts are individually exportable (hover to reveal Save button).
 
 - **Sessions inherit your global Claude config.** Sublight spawns the `claude` CLI as a child process, so whatever MCP servers, plugins, hooks, and permissions live in your `~/.claude.json` come along. If Claude is authorized to do something in your terminal, it can do it from a Sublight session.
 
-- **Per-session permission mode.** The new-session dialog lets you choose between "skip permission prompts" (`--dangerously-skip-permissions`) and the default restricted mode.
+- **Per-session permission mode.** The new-session dialog lets you pick "skip permission prompts" (`--dangerously-skip-permissions`) or a restricted mode with an explicit `--allowedTools` allowlist. Non-bypass sessions without an allowlist are rejected because Claude Code's interactive prompts require a TTY we can't provide.
 
 - **File serving is scoped by default.** The `/local-file` endpoint (used for artifact image display) is restricted to image extensions, requires auth, and is scoped to active session directories. Path traversal is blocked unconditionally.
 
@@ -101,8 +101,6 @@ Artifacts are individually exportable (hover to reveal Save button).
 - **No TLS.** Runs plain HTTP/WS. Use a reverse proxy with TLS if exposing beyond localhost.
 
 ### Known Limitations
-
-- **Non-bypass sessions hang on permission prompts.** Claude Code's interactive permission flow expects a terminal. Use "skip permission prompts" or configure an allowed-tools list when creating a session.
 
 - **Sessions are in-memory but logs persist.** Server restarts drop active sessions. NDJSON transcripts in `logs/` remain and can be resumed.
 

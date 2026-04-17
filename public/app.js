@@ -645,7 +645,7 @@ async function rehydrateSessionFromLog(sessionId) {
     if (entry.type === 'artifact' && entry.artifact) {
       const a = entry.artifact;
       // Skip transient/control artifacts that don't belong in the history panel.
-      const transient = ['notification', 'open_url', 'progress', 'set_session_name', 'pin', 'permission_request'];
+      const transient = ['notification', 'open_url', 'progress', 'set_session_name', 'pin'];
       if (transient.includes(a.type)) {
         if (a.type === 'set_session_name' && a.name) session.name = a.name;
         continue;
@@ -974,13 +974,6 @@ function handleServerMessage(msg) {
       // Handle open_url with user confirmation
       if (artifact.type === 'open_url') {
         handleOpenUrl(artifact);
-        break;
-      }
-
-      // Handle permission_request — Claude wants to run a tool in
-      // non-bypass mode, and we need to ask the user to allow/deny.
-      if (artifact.type === 'permission_request') {
-        handlePermissionRequest(artifact);
         break;
       }
 
@@ -2225,31 +2218,6 @@ async function handleOpenUrl(artifact) {
   if (ok) {
     window.open(artifact.url, '_blank', 'noopener,noreferrer');
   }
-}
-
-async function handlePermissionRequest(artifact) {
-  const { toolName, input, requestId } = artifact;
-  let inputPreview;
-  try {
-    inputPreview = JSON.stringify(input, null, 2);
-  } catch {
-    inputPreview = String(input);
-  }
-  // Cap the preview so a giant tool input doesn't blow up the modal.
-  if (inputPreview.length > 2000) {
-    inputPreview = inputPreview.slice(0, 2000) + '\n… (truncated)';
-  }
-
-  const allow = await confirm(
-    `Claude wants to use a tool:\n\n${toolName}\n\n${inputPreview}\n\nAllow this tool call?`
-  );
-
-  send({
-    type: 'permission_response',
-    requestId,
-    allow,
-    message: allow ? undefined : 'User denied via Sublight UI',
-  });
 }
 
 document.getElementById('btn-retry').addEventListener('click', () => {
