@@ -3,9 +3,11 @@
    ================================================================ */
 
 import { consumeAttachments } from './attachments.js';
+import { authFetch, authUrl } from './auth.js';
 import { confirm } from './confirm.js';
 import { renderNotes, removeSessionNotes } from './notes.js';
 import { state } from './state.js';
+import { showToast } from './toast.js';
 
 // ---------------------------------------------------------------------------
 // Markdown renderer config
@@ -53,25 +55,6 @@ const $artifactsList  = document.getElementById('artifacts-list');
 const $setupScreen    = document.getElementById('setup-screen');
 const $setupToken     = document.getElementById('setup-token');
 const $settingsDialog = document.getElementById('settings-dialog');
-
-// ---------------------------------------------------------------------------
-// Auth & fetch helpers
-// ---------------------------------------------------------------------------
-
-/** Fetch with auth token in Authorization header. */
-function authFetch(url, options = {}) {
-  if (state.authToken) {
-    options.headers = { ...options.headers, Authorization: `Bearer ${state.authToken}` };
-  }
-  return fetch(url, options);
-}
-
-/** Append auth token as query parameter (for img.src and other non-fetch URLs). */
-function authUrl(base) {
-  if (!state.authToken) return base;
-  const sep = base.includes('?') ? '&' : '?';
-  return `${base}${sep}token=${encodeURIComponent(state.authToken)}`;
-}
 
 function showAuthScreen() {
   $authScreen.classList.remove('hidden');
@@ -2096,22 +2079,6 @@ document.getElementById('btn-artifacts').addEventListener('click', () => {
   $artifactsPanel.classList.toggle('hidden', !state.artifactsVisible);
   if (state.artifactsVisible) renderArtifacts();
 });
-
-// ---------------------------------------------------------------------------
-// Toast notifications
-// ---------------------------------------------------------------------------
-
-function showToast(message) {
-  const toast = document.createElement('div');
-  toast.className = 'toast';
-  toast.textContent = message;
-  document.body.appendChild(toast);
-  requestAnimationFrame(() => toast.classList.add('visible'));
-  setTimeout(() => {
-    toast.classList.remove('visible');
-    setTimeout(() => toast.remove(), 300);
-  }, 4000);
-}
 
 // ---------------------------------------------------------------------------
 // New Session dialog with folder autocomplete
