@@ -580,7 +580,10 @@ function logToSession(session, entry) {
 // WebSocket server — with auth on upgrade
 // ---------------------------------------------------------------------------
 
-const wss = new WebSocketServer({ noServer: true, maxPayload: 10 * 1024 * 1024 });
+// 100 MiB: big enough for attached screenshots and reasonable files without
+// being an unbounded memory hazard. The auth gate on WS upgrade is the real
+// control against abuse — this is just a sanity ceiling on a single frame.
+const wss = new WebSocketServer({ noServer: true, maxPayload: 100 * 1024 * 1024 });
 
 httpServer.on('upgrade', (req, socket, head) => {
   if (AUTH_TOKEN) {
