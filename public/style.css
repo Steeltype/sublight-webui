@@ -161,13 +161,20 @@ html, body {
   padding: 8px 12px;
 }
 
-.token-row code {
+.token-row code,
+.token-row input[type="password"],
+.token-row input[type="text"] {
   flex: 1;
+  min-width: 0;
   font-family: inherit;
   font-size: 13px;
   color: var(--text-bright);
   word-break: break-all;
   user-select: all;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 0;
 }
 
 .token-row button {

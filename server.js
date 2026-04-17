@@ -4,7 +4,7 @@ import helmet from 'helmet';
 import { createServer } from 'http';
 import path from 'path';
 import { WebSocketServer } from 'ws';
-import { AUTH_TOKEN, audit, timingSafeCompare } from './lib/auth.js';
+import { audit, getAuthToken, timingSafeCompare } from './lib/auth.js';
 import { createShutdown, startIdleSweeper } from './lib/lifecycle.js';
 import { ARTIFACT_MCP_PATH, LOG_DIR, REPO_ROOT } from './lib/paths.js';
 import { registerRoutes } from './lib/routes.js';
@@ -51,10 +51,11 @@ const wss = new WebSocketServer({ noServer: true, maxPayload: 100 * 1024 * 1024 
 registerRoutes(app, { wss, shutdown });
 
 httpServer.on('upgrade', (req, socket, head) => {
-  if (AUTH_TOKEN) {
+  const authToken = getAuthToken();
+  if (authToken) {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const token = url.searchParams.get('token');
-    if (!token || !timingSafeCompare(token, AUTH_TOKEN)) {
+    if (!token || !timingSafeCompare(token, authToken)) {
       audit({ type: 'ws_auth_failed', hadToken: !!token }, req);
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
@@ -79,8 +80,9 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 // ---------------------------------------------------------------------------
 
 httpServer.listen(PORT, HOST, () => {
+  const authToken = getAuthToken();
   console.log(`Sublight WebUI running at http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
-  if (AUTH_TOKEN) {
+  if (authToken) {
     console.log('Auth: token required');
   } else {
     console.log('\x1b[33m⚠ Auth: DISABLED — anyone with network access can use this instance\x1b[0m');
@@ -90,8 +92,8 @@ httpServer.listen(PORT, HOST, () => {
   }
   if (settings.current.firstRun) {
     console.log('\x1b[36m→ First run — open the UI to complete setup\x1b[0m');
-    if (AUTH_TOKEN) {
-      console.log(`\x1b[36m→ Setup token: ${AUTH_TOKEN}\x1b[0m`);
+    if (authToken) {
+      console.log(`\x1b[36m→ Setup token: ${authToken}\x1b[0m`);
     }
   }
   console.log(`Artifact MCP: ${ARTIFACT_MCP_PATH}`);

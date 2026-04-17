@@ -11,7 +11,7 @@ Sublight is a web UI that wraps the Claude CLI via persistent stdin/stdout strea
 - **server.js** (~100 lines) — Orchestration only: express + helmet, static mount, WebSocket server with auth-on-upgrade, interval/signal wiring, startup banner.
 - **lib/settings.js** — `DEFAULT_SETTINGS`, `saveSettings`, and the live `settings.current` holder. Also loads `.env` and exports `PORT`/`HOST`.
 - **lib/paths.js** — `REPO_ROOT`, `LOG_DIR`, `SETTINGS_PATH`, `AUDIT_LOG_PATH`, `ARTIFACT_MCP_PATH`.
-- **lib/auth.js** — `timingSafeCompare`, `isLoopback`, `httpAuth`, `audit`. `AUTH_TOKEN` is frozen at module init (regeneration requires restart).
+- **lib/auth.js** — `timingSafeCompare`, `isLoopback`, `httpAuth`, `audit`, `getAuthToken()`. The token is resolved live on every request (env var wins over `settings.current.token`), so first-run setup and regeneration take effect without restart.
 - **lib/sessionState.js** — The mutable process state: `sessions` Map, `sessionLogPaths`, `connectionSessions`, `connectionMessageTimestamps`, `pendingUrlRequests`. Plus `sendJSON`, `sendToSession`, `getConnectionSessions`, `checkRateLimit`.
 - **lib/sessionLog.js** — Per-session NDJSON log I/O (`initSessionLog`, `logToSession`, `extractLogMeta`).
 - **lib/claudeProcess.js** — `validateCwd`, `isPathInSessionScope`, `writeMcpConfig`, `killSession`, `ensureProcess`, `sendMessage`. Owns the child process lifecycle (spawn, stdin write, stdout parse, error/close handling).
