@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import { WebSocket } from 'ws';
 
@@ -355,6 +355,37 @@ test('session recovers after Claude process crashes mid-turn', async () => {
   await waitFor((m) => m.type === 'stream_end');
 
   ws.close();
+});
+
+test('/local-file rejects a symlink that escapes session scope', async () => {
+  // Stand up a session rooted in a temp dir, then plant a .png symlink
+  // inside that dir pointing to a file outside of it. The pre-fix code
+  // checked the scope using the link's own path (which was in scope);
+  // the fixed code resolves the real path and rejects.
+  const scopeDir = mkdtempSync(join(os.tmpdir(), 'sublight-scope-'));
+  const outsideDir = mkdtempSync(join(os.tmpdir(), 'sublight-outside-'));
+  const target = join(outsideDir, 'secret.png');
+  writeFileSync(target, 'PNGDATA');
+  const linkPath = join(scopeDir, 'leak.png');
+  symlinkSync(target, linkPath);
+
+  const { ws, waitFor, opened } = openWs();
+  await opened;
+
+  send(ws, { type: 'new_session', cwd: scopeDir, permissionMode: 'bypass' });
+  await waitFor((m) => m.type === 'session_created');
+
+  const res = await fetch(
+    `${baseUrl}/local-file?path=${encodeURIComponent(linkPath)}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  assert.equal(res.status, 403);
+  const body = await res.text();
+  assert.match(body, /outside session scope/i);
+
+  ws.close();
+  rmSync(scopeDir, { recursive: true, force: true });
+  rmSync(outsideDir, { recursive: true, force: true });
 });
 
 test('rate limit trips when messageRateLimitPerMin is exceeded', async () => {

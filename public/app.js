@@ -87,13 +87,18 @@ function confirm(message) {
     function cleanup() {
       $confirmOk.removeEventListener('click', onOk);
       $confirmCancel.removeEventListener('click', onCancel);
+      $confirmDialog.removeEventListener('cancel', onDialogCancel);
       $confirmDialog.close();
     }
     function onOk() { cleanup(); resolve(true); }
     function onCancel() { cleanup(); resolve(false); }
+    // <dialog> fires 'cancel' when the user hits Escape. Without this the
+    // promise stays pending and the click listeners leak to the next open.
+    function onDialogCancel() { cleanup(); resolve(false); }
 
     $confirmOk.addEventListener('click', onOk);
     $confirmCancel.addEventListener('click', onCancel);
+    $confirmDialog.addEventListener('cancel', onDialogCancel);
   });
 }
 

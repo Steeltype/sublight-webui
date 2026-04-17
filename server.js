@@ -431,19 +431,26 @@ app.get('/local-file', (req, res) => {
   if (!allowed.includes(ext)) {
     return res.status(403).send('File type not allowed');
   }
-  // Scope check: when enabled, only serve files under active session directories
-  if (settings.security.scopeFilesToSession && !isPathInSessionScope(resolved)) {
-    return res.status(403).send('Path outside session scope');
-  }
-  // nosemgrep — intentional: auth-gated local file serving for artifact display.
-  // Only serves image extensions. Users already have full shell access via Claude sessions.
-  if (!fs.existsSync(resolved)) { // nosemgrep
+  // Follow symlinks before the scope check — otherwise a link under a session
+  // cwd could be used to read arbitrary files outside of it. realpath also
+  // doubles as an existence check so we no longer need fs.existsSync below.
+  let realPath;
+  try {
+    realPath = fs.realpathSync(resolved); // nosemgrep
+  } catch {
     return res.status(404).send('File not found');
   }
-  // Stream file directly — res.sendFile has issues with some Windows paths in Express 5
+  // Scope check: when enabled, only serve files under active session directories.
+  // We check the real (symlink-resolved) path so links can't escape scope.
+  if (settings.security.scopeFilesToSession && !isPathInSessionScope(realPath)) {
+    return res.status(403).send('Path outside session scope');
+  }
+  // Stream file directly — res.sendFile has issues with some Windows paths in Express 5.
+  // nosemgrep — intentional: auth-gated file serving for artifact display.
+  // Only serves image extensions. Users already have full shell access via Claude sessions.
   const mimeTypes = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.bmp': 'image/bmp' };
   res.setHeader('Content-Type', mimeTypes[ext] || 'application/octet-stream');
-  fs.createReadStream(resolved).pipe(res); // nosemgrep
+  fs.createReadStream(realPath).pipe(res); // nosemgrep
 });
 
 // Artifact callback — receives POSTs from the MCP artifact server (per-session secret)
@@ -755,10 +762,25 @@ function ensureProcess(session, ws) {
     logToSession(session, { type: 'stdin_error', message: err.message });
   });
 
-  // NDJSON line buffer for stdout
+  // NDJSON line buffer for stdout. `stdoutBuf` holds bytes since the last
+  // newline. A pathological Claude process (or corrupted stream) could keep
+  // streaming without ever emitting \n — cap the per-line buffer so we can't
+  // balloon memory. 8 MiB is well above any real NDJSON event we emit.
+  const MAX_STDOUT_LINE_BYTES = 8 * 1024 * 1024;
   let stdoutBuf = '';
   proc.stdout.on('data', (chunk) => {
     stdoutBuf += chunk.toString();
+    if (stdoutBuf.length > MAX_STDOUT_LINE_BYTES) {
+      logToSession(session, {
+        type: 'parse_error',
+        message: `stdout line exceeded ${MAX_STDOUT_LINE_BYTES} bytes — dropping buffer`,
+        raw: stdoutBuf.slice(0, 200),
+      });
+      // Drop the partial line but keep whatever comes after the next newline.
+      const nl = stdoutBuf.lastIndexOf('\n');
+      stdoutBuf = nl >= 0 ? stdoutBuf.slice(nl + 1) : '';
+      return;
+    }
     const lines = stdoutBuf.split('\n');
     stdoutBuf = lines.pop();
 
