@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { mkdtempSync, rmSync, writeFileSync, cpSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import os from 'node:os';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -38,8 +38,8 @@ function startServer() {
   const port = randomPort();
   baseUrl = `http://127.0.0.1:${port}`;
 
-  // Mark settings.firstRun as false so we don't trip the setup flow and we
-  // can hit auth-gated endpoints directly with the env token.
+  // Sandboxed settings file — SUBLIGHT_SETTINGS_PATH tells the server to read
+  // and write this instead of the repo's real settings.json.
   const settingsPath = join(sandbox, 'sublight-test-settings.json');
   writeFileSync(
     settingsPath,
@@ -60,14 +60,6 @@ function startServer() {
     }, null, 2),
   );
 
-  // Unfortunately SETTINGS_PATH is hardcoded in server.js, so we can't point
-  // it at the sandbox. We'll snapshot the real one, swap in a test one, and
-  // restore afterwards.
-  const realSettings = join(REPO_ROOT, 'settings.json');
-  const backupSettings = join(sandbox, 'settings.json.bak');
-  try { cpSync(realSettings, backupSettings); } catch {}
-  cpSync(settingsPath, realSettings);
-
   child = spawn(process.execPath, ['server.js'], {
     cwd: REPO_ROOT,
     env: {
@@ -75,23 +67,17 @@ function startServer() {
       PORT: String(port),
       HOST: '127.0.0.1',
       SUBLIGHT_TOKEN: token,
+      SUBLIGHT_SETTINGS_PATH: settingsPath,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      try { cpSync(backupSettings, realSettings); } catch {}
-      reject(new Error('Server did not start within 8s'));
-    }, 8000);
+    const timer = setTimeout(() => reject(new Error('Server did not start within 8s')), 8000);
     const onData = (chunk) => {
-      const text = chunk.toString();
-      if (text.includes('Sublight WebUI running at')) {
+      if (chunk.toString().includes('Sublight WebUI running at')) {
         clearTimeout(timer);
         child.stdout.off('data', onData);
-        // Server has loaded settings.json synchronously at import time, so by
-        // the time the banner prints it's safe to restore the real file.
-        try { cpSync(backupSettings, realSettings); } catch {}
         resolve();
       }
     };
@@ -100,7 +86,6 @@ function startServer() {
     child.on('exit', (code) => {
       if (code !== 0 && code !== null) {
         clearTimeout(timer);
-        try { cpSync(backupSettings, realSettings); } catch {}
         reject(new Error(`Server exited early with code ${code}`));
       }
     });

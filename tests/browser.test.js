@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import { chromium } from 'playwright';
 
@@ -57,11 +57,6 @@ async function startServer() {
     }, null, 2),
   );
 
-  const realSettings = join(REPO_ROOT, 'settings.json');
-  const backupSettings = join(sandbox, 'settings.json.bak');
-  try { cpSync(realSettings, backupSettings); } catch {}
-  cpSync(settingsPath, realSettings);
-
   const fakeClaude = join(REPO_ROOT, 'tests', 'fixtures', 'fake-claude.js');
 
   child = spawn(process.execPath, ['server.js'], {
@@ -71,21 +66,18 @@ async function startServer() {
       PORT: String(port),
       HOST: '127.0.0.1',
       SUBLIGHT_TOKEN: TOKEN,
+      SUBLIGHT_SETTINGS_PATH: settingsPath,
       SUBLIGHT_CLAUDE_CMD: JSON.stringify([process.execPath, fakeClaude]),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      try { cpSync(backupSettings, realSettings); } catch {}
-      reject(new Error('Server did not start within 8s'));
-    }, 8000);
+    const timer = setTimeout(() => reject(new Error('Server did not start within 8s')), 8000);
     const onData = (chunk) => {
       if (chunk.toString().includes('Sublight WebUI running at')) {
         clearTimeout(timer);
         child.stdout.off('data', onData);
-        try { cpSync(backupSettings, realSettings); } catch {}
         resolve();
       }
     };
@@ -94,7 +86,6 @@ async function startServer() {
     child.on('exit', (code) => {
       if (code !== 0 && code !== null) {
         clearTimeout(timer);
-        try { cpSync(backupSettings, realSettings); } catch {}
         reject(new Error(`Server exited early with code ${code}`));
       }
     });
