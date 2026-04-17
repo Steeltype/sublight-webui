@@ -512,6 +512,68 @@ test('GET /api/logs lists sessions and /api/logs/:id streams the NDJSON body', a
   ws.close();
 });
 
+test('notes API round-trips per-session and is auth-gated', async () => {
+  const { randomUUID } = await import('node:crypto');
+  const sessionId = randomUUID();
+
+  // Unauthenticated → 401 on both verbs.
+  const unauthGet = await fetch(`${baseUrl}/api/notes/${sessionId}`);
+  assert.equal(unauthGet.status, 401);
+  const unauthPut = await fetch(`${baseUrl}/api/notes/${sessionId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ notes: [] }),
+  });
+  assert.equal(unauthPut.status, 401);
+
+  // Empty-on-miss: a fresh session id returns { notes: [] } without
+  // creating a file.
+  const missing = await fetch(`${baseUrl}/api/notes/${sessionId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  assert.equal(missing.status, 200);
+  const missingBody = await missing.json();
+  assert.deepEqual(missingBody, { notes: [] });
+
+  // Round-trip: PUT writes, GET reads back the same payload.
+  const payload = {
+    notes: [
+      { text: 'first note', createdAt: '2026-01-01T00:00:00.000Z' },
+      { text: 'second note', createdAt: '2026-01-02T00:00:00.000Z' },
+    ],
+  };
+  const putRes = await fetch(`${baseUrl}/api/notes/${sessionId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload),
+  });
+  assert.equal(putRes.status, 200);
+  const putBody = await putRes.json();
+  assert.equal(putBody.count, 2);
+
+  const getRes = await fetch(`${baseUrl}/api/notes/${sessionId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  assert.equal(getRes.status, 200);
+  const getBody = await getRes.json();
+  assert.equal(getBody.notes.length, 2);
+  assert.equal(getBody.notes[0].text, 'first note');
+
+  // Bad payload → 400.
+  const bad = await fetch(`${baseUrl}/api/notes/${sessionId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ wrong: true }),
+  });
+  assert.equal(bad.status, 400);
+
+  // Clean up the notes file.
+  const { unlinkSync } = await import('node:fs');
+  try {
+    unlinkSync(join(REPO_ROOT, 'logs', `notes-${sessionId}.json`));
+  } catch {}
+});
+
 test('rate limit trips when messageRateLimitPerMin is exceeded', async () => {
   // We need a fresh server for this — we set rate limit via the settings
   // endpoint on the existing one.

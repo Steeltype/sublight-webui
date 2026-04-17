@@ -389,7 +389,58 @@ app.delete('/api/logs/:id', (req, res) => {
   }
   try {
     fs.unlinkSync(logPath); // nosemgrep
+    // Also clean up the session's notes sidecar if it exists. Failure here
+    // is non-fatal — the log is the primary artifact.
+    const notesPath = path.resolve(LOG_DIR, `notes-${safe}.json`);
+    if (notesPath.startsWith(path.resolve(LOG_DIR))) {
+      try { fs.unlinkSync(notesPath); } catch {} // nosemgrep
+    }
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Notes sidecar — per-session scratch pad. The frontend GETs on panel open
+// and PUTs on edit (debounced). File is a small JSON blob that's replaced
+// in full on every write — no append semantics, no history.
+app.get('/api/notes/:id', (req, res) => {
+  if (!httpAuth(req, res)) return;
+  const safe = req.params.id.replace(/[^a-f0-9-]/g, '');
+  const notesPath = path.resolve(LOG_DIR, `notes-${safe}.json`); // nosemgrep
+  if (!notesPath.startsWith(path.resolve(LOG_DIR))) {
+    return res.status(403).send('Invalid session id');
+  }
+  try {
+    // nosemgrep — auth-gated, id is [a-f0-9-] scoped to LOG_DIR
+    const raw = fs.readFileSync(notesPath, 'utf-8');
+    res.json(JSON.parse(raw));
+  } catch (err) {
+    if (err.code === 'ENOENT') return res.json({ notes: [] });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/notes/:id', (req, res) => {
+  if (!httpAuth(req, res)) return;
+  const safe = req.params.id.replace(/[^a-f0-9-]/g, '');
+  const notesPath = path.resolve(LOG_DIR, `notes-${safe}.json`); // nosemgrep
+  if (!notesPath.startsWith(path.resolve(LOG_DIR))) {
+    return res.status(403).send('Invalid session id');
+  }
+  const notes = Array.isArray(req.body?.notes) ? req.body.notes : null;
+  if (!notes) return res.status(400).json({ error: 'Expected { notes: [...] }' });
+  // Bound the payload so a runaway client can't eat disk.
+  const trimmed = notes
+    .filter((n) => n && typeof n.text === 'string')
+    .slice(0, 500)
+    .map((n) => ({
+      text: n.text.slice(0, 20000),
+      createdAt: typeof n.createdAt === 'string' ? n.createdAt : new Date().toISOString(),
+    }));
+  try {
+    fs.writeFileSync(notesPath, JSON.stringify({ notes: trimmed })); // nosemgrep
+    res.json({ ok: true, count: trimmed.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
