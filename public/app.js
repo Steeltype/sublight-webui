@@ -2,6 +2,11 @@
    Sublight WebUI — Frontend
    ================================================================ */
 
+import { consumeAttachments } from './attachments.js';
+import { confirm } from './confirm.js';
+import { renderNotes, removeSessionNotes } from './notes.js';
+import { state } from './state.js';
+
 // ---------------------------------------------------------------------------
 // Markdown renderer config
 // ---------------------------------------------------------------------------
@@ -21,25 +26,6 @@ function setMarkdownContent(el, text) {
   const fragment = DOMPurify.sanitize(raw, { RETURN_DOM_FRAGMENT: true });
   el.replaceChildren(fragment);
 }
-
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
-
-const state = {
-  sessions: new Map(),
-  activeId: null,
-  ws: null,
-  defaultCwd: '',
-  defaultPermissionMode: 'default',
-  reconnectDelay: 1000,
-  authToken: sessionStorage.getItem('sublight_token') || null,
-  authRequired: false,
-  notesVisible: false,
-  artifactsVisible: false,
-  /** Map<sessionId, artifact[]> */
-  artifacts: new Map(),
-};
 
 // ---------------------------------------------------------------------------
 // DOM refs
@@ -62,45 +48,11 @@ const $authForm      = document.getElementById('auth-form');
 const $authToken     = document.getElementById('auth-token');
 const $authError     = document.getElementById('auth-error');
 const $appShell      = document.getElementById('app-shell');
-const $notesPanel    = document.getElementById('notes-panel');
-const $notesList     = document.getElementById('notes-list');
 const $artifactsPanel = document.getElementById('artifacts-panel');
 const $artifactsList  = document.getElementById('artifacts-list');
 const $setupScreen    = document.getElementById('setup-screen');
 const $setupToken     = document.getElementById('setup-token');
 const $settingsDialog = document.getElementById('settings-dialog');
-
-// ---------------------------------------------------------------------------
-// Confirm dialog
-// ---------------------------------------------------------------------------
-
-const $confirmDialog  = document.getElementById('confirm-dialog');
-const $confirmMessage = document.getElementById('confirm-message');
-const $confirmOk      = document.getElementById('confirm-ok');
-const $confirmCancel  = document.getElementById('confirm-cancel');
-
-function confirm(message) {
-  return new Promise((resolve) => {
-    $confirmMessage.textContent = message;
-    $confirmDialog.showModal();
-
-    function cleanup() {
-      $confirmOk.removeEventListener('click', onOk);
-      $confirmCancel.removeEventListener('click', onCancel);
-      $confirmDialog.removeEventListener('cancel', onDialogCancel);
-      $confirmDialog.close();
-    }
-    function onOk() { cleanup(); resolve(true); }
-    function onCancel() { cleanup(); resolve(false); }
-    // <dialog> fires 'cancel' when the user hits Escape. Without this the
-    // promise stays pending and the click listeners leak to the next open.
-    function onDialogCancel() { cleanup(); resolve(false); }
-
-    $confirmOk.addEventListener('click', onOk);
-    $confirmCancel.addEventListener('click', onCancel);
-    $confirmDialog.addEventListener('cancel', onDialogCancel);
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Auth & fetch helpers
@@ -1871,99 +1823,6 @@ document.getElementById('btn-bundle').addEventListener('click', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Notes panel — per-session scratch space, stored in localStorage
-// ---------------------------------------------------------------------------
-
-function notesKey(sessionId) {
-  return `sublight_notes_${sessionId}`;
-}
-
-function loadNotes(sessionId) {
-  try {
-    return JSON.parse(localStorage.getItem(notesKey(sessionId))) || [];
-  } catch {
-    return [];
-  }
-}
-
-function saveNotes(sessionId, notes) {
-  localStorage.setItem(notesKey(sessionId), JSON.stringify(notes));
-}
-
-function removeSessionNotes(sessionId) {
-  localStorage.removeItem(notesKey(sessionId));
-}
-
-function renderNotes() {
-  if (!state.activeId) return;
-  const notes = loadNotes(state.activeId);
-  $notesList.replaceChildren();
-
-  if (notes.length === 0) {
-    const empty = document.createElement('p');
-    empty.className = 'notes-empty';
-    empty.textContent = 'No notes yet. Click + to add one.';
-    $notesList.appendChild(empty);
-    return;
-  }
-
-  for (let i = 0; i < notes.length; i++) {
-    const card = document.createElement('div');
-    card.className = 'note-card';
-
-    const textarea = document.createElement('textarea');
-    textarea.className = 'note-textarea';
-    textarea.value = notes[i].text;
-    textarea.placeholder = 'Write a note...';
-    textarea.rows = 3;
-
-    // Auto-save on input
-    const idx = i;
-    textarea.addEventListener('input', () => {
-      const current = loadNotes(state.activeId);
-      if (current[idx]) {
-        current[idx].text = textarea.value;
-        saveNotes(state.activeId, current);
-      }
-    });
-
-    const deleteBtn = document.createElement('button');
-    deleteBtn.className = 'note-delete';
-    deleteBtn.textContent = '\u00d7';
-    deleteBtn.title = 'Delete note';
-    deleteBtn.addEventListener('click', async () => {
-      const ok = await confirm('Delete this note?');
-      if (!ok) return;
-      const current = loadNotes(state.activeId);
-      current.splice(idx, 1);
-      saveNotes(state.activeId, current);
-      renderNotes();
-    });
-
-    card.appendChild(deleteBtn);
-    card.appendChild(textarea);
-    $notesList.appendChild(card);
-  }
-}
-
-document.getElementById('btn-add-note').addEventListener('click', () => {
-  if (!state.activeId) return;
-  const notes = loadNotes(state.activeId);
-  notes.push({ text: '', createdAt: new Date().toISOString() });
-  saveNotes(state.activeId, notes);
-  renderNotes();
-  // Focus the new note
-  const last = $notesList.querySelector('.note-card:last-child .note-textarea');
-  if (last) last.focus();
-});
-
-document.getElementById('btn-notes').addEventListener('click', () => {
-  state.notesVisible = !state.notesVisible;
-  $notesPanel.classList.toggle('hidden', !state.notesVisible);
-  if (state.notesVisible) renderNotes();
-});
-
-// ---------------------------------------------------------------------------
 // Artifacts panel
 // ---------------------------------------------------------------------------
 
@@ -2426,133 +2285,6 @@ document.getElementById('dialog-cancel').addEventListener('click', () => {
 
 document.getElementById('btn-new-session').addEventListener('click', openNewSessionDialog);
 document.getElementById('btn-new-session-empty').addEventListener('click', openNewSessionDialog);
-
-// ---------------------------------------------------------------------------
-// File attachments — upload, paste, drag-and-drop
-// ---------------------------------------------------------------------------
-
-const $attachBar = document.getElementById('attachments-bar');
-const $fileInput = document.getElementById('file-input');
-const $btnAttach = document.getElementById('btn-attach');
-
-/** Array of { file: File, dataUrl: string, base64: string, mediaType: string } */
-const pendingAttachments = [];
-
-$btnAttach.addEventListener('click', () => $fileInput.click());
-
-$fileInput.addEventListener('change', () => {
-  for (const file of $fileInput.files) {
-    addAttachment(file);
-  }
-  $fileInput.value = '';
-});
-
-// Paste handler (screenshots from clipboard)
-$promptInput.addEventListener('paste', (e) => {
-  const items = e.clipboardData?.items;
-  if (!items) return;
-  for (const item of items) {
-    if (item.type.startsWith('image/')) {
-      e.preventDefault();
-      const file = item.getAsFile();
-      if (file) addAttachment(file);
-    }
-  }
-});
-
-// Drag and drop on messages area
-$messages.addEventListener('dragover', (e) => {
-  e.preventDefault();
-  $messages.classList.add('drag-over');
-});
-
-$messages.addEventListener('dragleave', () => {
-  $messages.classList.remove('drag-over');
-});
-
-$messages.addEventListener('drop', (e) => {
-  e.preventDefault();
-  $messages.classList.remove('drag-over');
-  for (const file of e.dataTransfer.files) {
-    addAttachment(file);
-  }
-});
-
-function addAttachment(file) {
-  const reader = new FileReader();
-  reader.onload = () => {
-    const dataUrl = reader.result;
-    // Extract base64 and media type
-    const match = dataUrl.match(/^data:(.+?);base64,(.+)$/);
-    if (!match) return;
-    const [, mediaType, base64] = match;
-
-    const attachment = { file, dataUrl, base64, mediaType };
-    pendingAttachments.push(attachment);
-    renderAttachments();
-  };
-  reader.readAsDataURL(file);
-}
-
-function removeAttachment(index) {
-  pendingAttachments.splice(index, 1);
-  renderAttachments();
-}
-
-function renderAttachments() {
-  $attachBar.replaceChildren();
-  if (pendingAttachments.length === 0) {
-    $attachBar.classList.add('hidden');
-    return;
-  }
-  $attachBar.classList.remove('hidden');
-
-  pendingAttachments.forEach((att, i) => {
-    const thumb = document.createElement('div');
-    thumb.className = 'attachment-thumb';
-
-    if (att.mediaType.startsWith('image/')) {
-      const img = document.createElement('img');
-      img.src = att.dataUrl;
-      thumb.appendChild(img);
-    } else {
-      const label = document.createElement('div');
-      label.className = 'file-label';
-      label.textContent = att.file.name;
-      thumb.appendChild(label);
-    }
-
-    const removeBtn = document.createElement('button');
-    removeBtn.className = 'attachment-remove';
-    removeBtn.textContent = '\u00d7';
-    removeBtn.addEventListener('click', () => removeAttachment(i));
-    thumb.appendChild(removeBtn);
-
-    $attachBar.appendChild(thumb);
-  });
-}
-
-function consumeAttachments() {
-  if (pendingAttachments.length === 0) return null;
-  const content = pendingAttachments.map(att => {
-    if (att.mediaType.startsWith('image/')) {
-      return {
-        type: 'image',
-        source: { type: 'base64', media_type: att.mediaType, data: att.base64 },
-      };
-    }
-    // For text files, decode and include as text
-    try {
-      const text = atob(att.base64);
-      return { type: 'text', text: `[File: ${att.file.name}]\n${text}` };
-    } catch {
-      return { type: 'text', text: `[File: ${att.file.name}] (binary, ${att.file.size} bytes)` };
-    }
-  });
-  pendingAttachments.length = 0;
-  renderAttachments();
-  return content;
-}
 
 // ---------------------------------------------------------------------------
 // Boot — check for first-run setup, then auth
