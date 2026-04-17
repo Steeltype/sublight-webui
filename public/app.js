@@ -66,15 +66,35 @@ $authForm.addEventListener('submit', (e) => {
 // First-run setup
 // ---------------------------------------------------------------------------
 
+/** Generate a fresh random token in the browser. 32 hex chars (128 bits). */
+function generateSetupToken() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 function showSetupScreen(token, securityDefaults) {
   // Close any dialogs that may have been opened before boot() finished
   document.querySelectorAll('dialog[open]').forEach(d => d.close());
   $setupScreen.classList.remove('hidden');
   $appShell.classList.add('hidden');
   $authScreen.classList.add('hidden');
-  $setupToken.textContent = token || 'See server console — token is only shown on the machine running the server.';
-  const copyBtn = document.getElementById('btn-copy-setup-token');
-  if (copyBtn) copyBtn.style.display = token ? '' : 'none';
+
+  const tokenHint = document.getElementById('setup-token-console-hint');
+  if (token) {
+    // Loopback setup: prefill so the user can just accept, or edit/paste their
+    // own value (e.g. one their password manager generated).
+    $setupToken.value = token;
+    $setupToken.disabled = false;
+    tokenHint.hidden = true;
+  } else {
+    // Remote setup: the server won't reveal the token over the network, so
+    // the user must copy it from the server console.
+    $setupToken.value = '';
+    $setupToken.placeholder = 'Paste the token from the server console';
+    $setupToken.disabled = false;
+    tokenHint.hidden = false;
+  }
 
   document.getElementById('setup-scope-files').checked = securityDefaults.scopeFilesToSession;
   document.getElementById('setup-no-svg').checked = !securityDefaults.serveSvg;
@@ -82,14 +102,25 @@ function showSetupScreen(token, securityDefaults) {
   document.getElementById('setup-max-sessions').value = securityDefaults.maxSessions;
 }
 
-document.getElementById('btn-copy-setup-token').addEventListener('click', () => {
-  navigator.clipboard.writeText($setupToken.textContent);
-  const btn = document.getElementById('btn-copy-setup-token');
-  btn.textContent = 'Copied!';
-  setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+document.getElementById('btn-setup-token-reveal').addEventListener('click', () => {
+  $setupToken.type = $setupToken.type === 'password' ? 'text' : 'password';
 });
 
-document.getElementById('btn-complete-setup').addEventListener('click', async () => {
+document.getElementById('btn-setup-token-regen').addEventListener('click', () => {
+  $setupToken.value = generateSetupToken();
+  $setupToken.type = 'text';
+});
+
+document.getElementById('setup-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+
+  const token = $setupToken.value.trim();
+  if (!token) {
+    showToast('Pick a token before continuing');
+    $setupToken.focus();
+    return;
+  }
+
   const security = {
     scopeFilesToSession: document.getElementById('setup-scope-files').checked,
     serveSvg: !document.getElementById('setup-no-svg').checked,
@@ -101,7 +132,7 @@ document.getElementById('btn-complete-setup').addEventListener('click', async ()
     const res = await fetch('/api/setup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ security }),
+      body: JSON.stringify({ token, security }),
     });
     const data = await res.json();
     if (data.ok) {
@@ -111,9 +142,12 @@ document.getElementById('btn-complete-setup').addEventListener('click', async ()
       $setupScreen.classList.add('hidden');
       $appShell.classList.remove('hidden');
       startWebSocket();
+    } else {
+      showToast(data.error || 'Setup failed');
     }
   } catch (err) {
     console.error('Setup failed:', err);
+    showToast('Setup failed — see console');
   }
 });
 
@@ -218,8 +252,8 @@ document.getElementById('audit-close').addEventListener('click', () => $auditDia
 document.getElementById('btn-regen-token').addEventListener('click', async () => {
   const ok = await confirm(
     'Regenerate the access token?\n\n' +
-    'The new token will be saved to settings.json but does NOT take effect until the server restarts. ' +
-    'After restart, current browser tabs will be logged out and must use the new token.'
+    'The new token takes effect immediately. Other browser tabs using the old ' +
+    'token will need to reconnect with the new one.'
   );
   if (!ok) return;
   try {
@@ -230,7 +264,9 @@ document.getElementById('btn-regen-token').addEventListener('click', async () =>
       return;
     }
     document.getElementById('settings-token').textContent = data.token;
-    showToast('Token regenerated — restart the server for it to take effect');
+    state.authToken = data.token;
+    sessionStorage.setItem('sublight_token', data.token);
+    showToast('Token regenerated');
   } catch (err) {
     console.error('Failed to regenerate token:', err);
   }
@@ -820,6 +856,11 @@ function handleServerMessage(msg) {
       if (state.activeId === msg.sessionId) state.activeId = null;
       renderSidebar();
       renderChat();
+      break;
+    }
+
+    case 'session_restarted': {
+      showToast('Claude process restarted — MCPs and settings reloaded');
       break;
     }
 
@@ -1633,6 +1674,19 @@ document.getElementById('btn-retry').addEventListener('click', () => {
   send({ type: 'message', sessionId: state.activeId, text, attachments });
   session.status = 'busy';
   updateStatusUI();
+});
+
+document.getElementById('btn-restart').addEventListener('click', async () => {
+  if (!state.activeId) return;
+  const session = state.sessions.get(state.activeId);
+  if (!session) return;
+  if (session.status === 'busy') {
+    showToast('Wait for the current response to finish before restarting');
+    return;
+  }
+  const ok = await confirm('Restart the Claude process? The conversation is kept via --resume, but any in-flight streaming is lost.');
+  if (!ok) return;
+  send({ type: 'restart_session', sessionId: state.activeId });
 });
 
 

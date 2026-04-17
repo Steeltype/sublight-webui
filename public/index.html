@@ -20,17 +20,23 @@
 
   <!-- ─── First-run setup screen ─────────────────────────────────── -->
   <div id="setup-screen" class="hidden">
-    <div class="setup-card">
+    <!-- Wrapped in a real <form> so password managers can offer to save the
+         token on submit. autocomplete=new-password cues the manager. -->
+    <form id="setup-form" class="setup-card" autocomplete="on">
       <h1>Sublight</h1>
       <p class="setup-subtitle">First-time setup</p>
 
       <section class="setup-section">
         <h3>Access Token</h3>
-        <p class="setup-hint">You'll need this to connect. Copy it now — it won't be shown again via the server.</p>
+        <p class="setup-hint">Used to connect to this instance. Save it in your password manager — you'll need it on every new tab.</p>
+        <!-- Hidden username helps some password managers tag the entry. -->
+        <input type="text" name="username" value="sublight" autocomplete="username" hidden>
         <div class="token-row">
-          <code id="setup-token"></code>
-          <button type="button" id="btn-copy-setup-token">Copy</button>
+          <input type="password" id="setup-token" name="sublight-token" autocomplete="new-password" spellcheck="false">
+          <button type="button" id="btn-setup-token-reveal" title="Show / hide">👁</button>
+          <button type="button" id="btn-setup-token-regen" title="Generate a new random token">Regenerate</button>
         </div>
+        <p class="setup-hint" id="setup-token-console-hint" hidden>Copy the token printed in the server console to connect.</p>
       </section>
 
       <section class="setup-section">
@@ -45,8 +51,8 @@
         </div>
       </section>
 
-      <button id="btn-complete-setup" class="primary-btn">Save &amp; Start</button>
-    </div>
+      <button type="submit" id="btn-complete-setup" class="primary-btn">Save &amp; Start</button>
+    </form>
   </div>
 
   <!-- ─── Auth screen ───────────────────────────────────────────── -->
@@ -88,6 +94,7 @@
           <span id="chat-runtime" class="hidden" title=""></span>
           <div id="chat-actions">
             <button id="btn-retry" class="hidden" title="Resend the last user message">Retry</button>
+            <button id="btn-restart" title="Restart the Claude process in place (keeps conversation, reloads MCPs and settings)">Restart</button>
             <button id="btn-save" title="Export session as markdown">Save</button>
             <button id="btn-bundle" title="Export full session bundle (markdown + artifacts + raw log)">Bundle</button>
             <button id="btn-artifacts" title="Toggle artifacts">Artifacts</button>
