@@ -617,6 +617,32 @@ function getConnectionSessions(ws) {
   return set;
 }
 
+/**
+ * Sliding-window rate limiter, per WebSocket connection. Records the current
+ * timestamp on success so successive calls deplete the allowance. Returns
+ * { ok: true } if the call is allowed, or { ok: false, retryMs } if the
+ * connection has already sent `limit` messages in the last 60s.
+ *
+ * settings.security.messageRateLimitPerMin set to 0 disables the check.
+ */
+function checkRateLimit(ws) {
+  const limit = settings.security.messageRateLimitPerMin || 0;
+  if (limit <= 0) return { ok: true };
+  const now = Date.now();
+  const windowStart = now - 60_000;
+  let stamps = connectionMessageTimestamps.get(ws);
+  if (!stamps) {
+    stamps = [];
+    connectionMessageTimestamps.set(ws, stamps);
+  }
+  while (stamps.length && stamps[0] < windowStart) stamps.shift();
+  if (stamps.length >= limit) {
+    return { ok: false, retryMs: stamps[0] + 60_000 - now, limit };
+  }
+  stamps.push(now);
+  return { ok: true };
+}
+
 function sendJSON(ws, obj) {
   if (ws.readyState === ws.OPEN) {
     ws.send(JSON.stringify(obj));
@@ -1032,29 +1058,14 @@ wss.on('connection', (ws) => {
         }
         if (!msg.text?.trim()) return;
 
-        // Sliding-window rate limit per connection — drop messages once the
-        // user trips it and tell them why. 0 disables.
-        const limit = settings.security.messageRateLimitPerMin || 0;
-        if (limit > 0) {
-          const now = Date.now();
-          const windowStart = now - 60_000;
-          let stamps = connectionMessageTimestamps.get(ws);
-          if (!stamps) {
-            stamps = [];
-            connectionMessageTimestamps.set(ws, stamps);
-          }
-          // Drop stamps that fell out of the window.
-          while (stamps.length && stamps[0] < windowStart) stamps.shift();
-          if (stamps.length >= limit) {
-            const retryMs = stamps[0] + 60_000 - now;
-            sendJSON(ws, {
-              type: 'error',
-              sessionId: msg.sessionId,
-              message: `Rate limit: ${limit} messages/min. Retry in ${Math.ceil(retryMs / 1000)}s.`,
-            });
-            return;
-          }
-          stamps.push(now);
+        const rate = checkRateLimit(ws);
+        if (!rate.ok) {
+          sendJSON(ws, {
+            type: 'error',
+            sessionId: msg.sessionId,
+            message: `Rate limit: ${rate.limit} messages/min. Retry in ${Math.ceil(rate.retryMs / 1000)}s.`,
+          });
+          return;
         }
 
         sendMessage(session, msg.text, ws, msg.attachments);
