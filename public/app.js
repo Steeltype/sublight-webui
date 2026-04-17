@@ -2,33 +2,16 @@
    Sublight WebUI — Frontend
    ================================================================ */
 
+import { handleOpenUrl, handlePin, handleProgress, renderArtifacts } from './artifacts.js';
 import { consumeAttachments } from './attachments.js';
-import { authFetch, authUrl } from './auth.js';
+import { authFetch } from './auth.js';
 import { confirm } from './confirm.js';
 import { downloadBlob } from './export.js';
+import { setMarkdownContent } from './markdown.js';
 import { renderNotes, removeSessionNotes } from './notes.js';
 import { state } from './state.js';
 import { showToast } from './toast.js';
-
-// ---------------------------------------------------------------------------
-// Markdown renderer config
-// ---------------------------------------------------------------------------
-
-marked.setOptions({
-  highlight(code, lang) {
-    if (lang && hljs.getLanguage(lang)) {
-      return hljs.highlight(code, { language: lang }).value;
-    }
-    return hljs.highlightAuto(code).value;
-  },
-  breaks: true,
-});
-
-function setMarkdownContent(el, text) {
-  const raw = marked.parse(text);
-  const fragment = DOMPurify.sanitize(raw, { RETURN_DOM_FRAGMENT: true });
-  el.replaceChildren(fragment);
-}
+import { connect, send } from './ws.js';
 
 // ---------------------------------------------------------------------------
 // DOM refs
@@ -52,7 +35,6 @@ const $authToken     = document.getElementById('auth-token');
 const $authError     = document.getElementById('auth-error');
 const $appShell      = document.getElementById('app-shell');
 const $artifactsPanel = document.getElementById('artifacts-panel');
-const $artifactsList  = document.getElementById('artifacts-list');
 const $setupScreen    = document.getElementById('setup-screen');
 const $setupToken     = document.getElementById('setup-token');
 const $settingsDialog = document.getElementById('settings-dialog');
@@ -77,7 +59,7 @@ $authForm.addEventListener('submit', (e) => {
   sessionStorage.setItem('sublight_token', token);
   $authError.textContent = '';
   hideAuthScreen();
-  connect();
+  startWebSocket();
 });
 
 // ---------------------------------------------------------------------------
@@ -128,7 +110,7 @@ document.getElementById('btn-complete-setup').addEventListener('click', async ()
       sessionStorage.setItem('sublight_token', data.token);
       $setupScreen.classList.add('hidden');
       $appShell.classList.remove('hidden');
-      connect();
+      startWebSocket();
     }
   } catch (err) {
     console.error('Setup failed:', err);
@@ -681,52 +663,14 @@ document.getElementById('logs-close').addEventListener('click', () => {
 // WebSocket connection with exponential backoff
 // ---------------------------------------------------------------------------
 
-const MAX_RECONNECT_DELAY = 30000;
-
-function connect() {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  let url = `${proto}://${location.host}`;
-  if (state.authToken) {
-    url += `?token=${encodeURIComponent(state.authToken)}`;
-  }
-
-  const ws = new WebSocket(url);
-
-  ws.addEventListener('open', () => {
-    state.ws = ws;
-    state.reconnectDelay = 1000;
-    console.log('[ws] connected');
-    send({ type: 'get_defaults' });
-    // Ask the server what's still alive. Any sessions the client doesn't
-    // already know about will be auto-rehydrated and reattached.
-    send({ type: 'list_sessions' });
-  });
-
-  ws.addEventListener('message', (evt) => {
-    let msg;
-    try { msg = JSON.parse(evt.data); } catch { return; }
-    handleServerMessage(msg);
-  });
-
-  ws.addEventListener('close', (evt) => {
-    state.ws = null;
-    if (evt.code === 1006 && state.authRequired) {
-      state.authToken = null;
-      sessionStorage.removeItem('sublight_token');
+function startWebSocket() {
+  connect({
+    onMessage: handleServerMessage,
+    onAuthFailed: () => {
       $authError.textContent = 'Invalid token. Please try again.';
       showAuthScreen();
-      return;
-    }
-    console.log(`[ws] disconnected — reconnecting in ${state.reconnectDelay / 1000}s`);
-    setTimeout(connect, state.reconnectDelay);
-    state.reconnectDelay = Math.min(state.reconnectDelay * 2, MAX_RECONNECT_DELAY);
+    },
   });
-}
-
-function send(obj) {
-  if (state.ws?.readyState === WebSocket.OPEN) {
-    state.ws.send(JSON.stringify(obj));
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1675,252 +1619,9 @@ $btnCopyCwd.addEventListener('click', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Artifacts panel
+// Artifacts panel lives in artifacts.js; only chat-adjacent handlers stay here.
 // ---------------------------------------------------------------------------
 
-function renderArtifacts() {
-  if (!state.activeId) return;
-  const artifacts = state.artifacts.get(state.activeId) || [];
-  $artifactsList.replaceChildren();
-
-  if (artifacts.length === 0 && !getProgressBars(state.activeId).size) {
-    const empty = document.createElement('p');
-    empty.className = 'artifacts-empty';
-    empty.textContent = 'No artifacts yet. Claude can use show_image, show_artifact, show_diff, and other tools to display content here.';
-    $artifactsList.appendChild(empty);
-    return;
-  }
-
-  // Render progress bars at top
-  for (const [id, prog] of getProgressBars(state.activeId)) {
-    const bar = document.createElement('div');
-    bar.className = 'artifact-progress' + (prog.done ? ' done' : '');
-    const label = document.createElement('div');
-    label.className = 'progress-label';
-    label.textContent = prog.label;
-    bar.appendChild(label);
-    const track = document.createElement('div');
-    track.className = 'progress-track';
-    const fill = document.createElement('div');
-    fill.className = 'progress-fill';
-    fill.style.width = `${prog.percent}%`;
-    track.appendChild(fill);
-    bar.appendChild(track);
-    const pct = document.createElement('div');
-    pct.className = 'progress-pct';
-    pct.textContent = prog.done ? 'Done' : `${prog.percent}%`;
-    bar.appendChild(pct);
-    $artifactsList.appendChild(bar);
-  }
-
-  // Render pinned artifacts first
-  const pinned = artifacts.filter(a => a.pinned);
-  const unpinned = artifacts.filter(a => !a.pinned);
-
-  for (const artifact of [...pinned, ...unpinned]) {
-    const card = renderArtifactCard(artifact);
-    if (card) $artifactsList.appendChild(card);
-  }
-
-  $artifactsList.scrollTop = $artifactsList.scrollHeight;
-}
-
-function renderArtifactCard(artifact) {
-  const card = document.createElement('div');
-  card.className = 'artifact-card' + (artifact.pinned ? ' pinned' : '');
-
-  if (artifact.type === 'image') {
-    const img = document.createElement('img');
-    img.src = authUrl(`/local-file?path=${encodeURIComponent(artifact.path)}`);
-    img.alt = artifact.caption || 'Image artifact';
-    img.loading = 'lazy';
-    card.appendChild(img);
-    if (artifact.caption) {
-      const cap = document.createElement('div');
-      cap.className = 'artifact-caption';
-      cap.textContent = artifact.caption;
-      card.appendChild(cap);
-    }
-  } else if (artifact.type === 'code') {
-    const title = document.createElement('div');
-    title.className = 'artifact-title';
-    title.textContent = artifact.title;
-    card.appendChild(title);
-    const pre = document.createElement('pre');
-    const code = document.createElement('code');
-    code.textContent = artifact.content;
-    if (artifact.language) {
-      code.className = `language-${artifact.language}`;
-      hljs.highlightElement(code);
-    }
-    pre.appendChild(code);
-    card.appendChild(pre);
-  } else if (artifact.type === 'diff') {
-    const title = document.createElement('div');
-    title.className = 'artifact-title';
-    title.textContent = artifact.title;
-    // Copy-to-clipboard button inline in the title row for quick grab.
-    const copyBtn = document.createElement('button');
-    copyBtn.className = 'diff-copy-btn';
-    copyBtn.textContent = 'Copy';
-    copyBtn.title = 'Copy raw diff to clipboard';
-    copyBtn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      try {
-        await navigator.clipboard.writeText(artifact.diff);
-        copyBtn.textContent = 'Copied!';
-        setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
-      } catch (err) {
-        console.error('Clipboard copy failed:', err);
-      }
-    });
-    title.appendChild(copyBtn);
-    card.appendChild(title);
-
-    // Quick stat summary: +added / -removed across the whole diff.
-    let added = 0, removed = 0;
-    const lines = artifact.diff.split('\n');
-    for (const line of lines) {
-      if (line.startsWith('+') && !line.startsWith('+++')) added++;
-      else if (line.startsWith('-') && !line.startsWith('---')) removed++;
-    }
-    if (added || removed) {
-      const stat = document.createElement('div');
-      stat.className = 'diff-stat';
-      const addSpan = document.createElement('span');
-      addSpan.className = 'diff-add';
-      addSpan.textContent = `+${added}`;
-      const rmSpan = document.createElement('span');
-      rmSpan.className = 'diff-remove';
-      rmSpan.textContent = `−${removed}`;
-      stat.append(addSpan, ' ', rmSpan);
-      card.appendChild(stat);
-    }
-
-    const pre = document.createElement('pre');
-    pre.className = 'diff-content';
-    for (const line of lines) {
-      const span = document.createElement('span');
-      span.textContent = line + '\n';
-      if (line.startsWith('+++') || line.startsWith('---')) {
-        span.className = 'diff-file';
-      } else if (line.startsWith('+')) {
-        span.className = 'diff-add';
-      } else if (line.startsWith('-')) {
-        span.className = 'diff-remove';
-      } else if (line.startsWith('@@')) {
-        span.className = 'diff-hunk';
-      }
-      pre.appendChild(span);
-    }
-    card.appendChild(pre);
-  } else if (artifact.type === 'markdown') {
-    const title = document.createElement('div');
-    title.className = 'artifact-title';
-    title.textContent = artifact.title;
-    card.appendChild(title);
-    const body = document.createElement('div');
-    body.className = 'artifact-markdown';
-    setMarkdownContent(body, artifact.markdown);
-    card.appendChild(body);
-  } else {
-    return null;
-  }
-
-  // Export button on every card
-  const exportBtn = document.createElement('button');
-  exportBtn.className = 'artifact-export';
-  exportBtn.textContent = 'Save';
-  exportBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    exportArtifact(artifact);
-  });
-  card.appendChild(exportBtn);
-
-  return card;
-}
-
-function exportArtifact(artifact) {
-  let blob, filename;
-
-  if (artifact.type === 'image') {
-    // Download image via fetch
-    authFetch(`/local-file?path=${encodeURIComponent(artifact.path)}`)
-      .then(r => r.blob())
-      .then(b => {
-        const ext = artifact.path.split('.').pop() || 'png';
-        downloadBlob(b, `artifact.${ext}`);
-      });
-    return;
-  } else if (artifact.type === 'code') {
-    const ext = artifact.language ? { javascript: 'js', python: 'py', typescript: 'ts', html: 'html', css: 'css', json: 'json' }[artifact.language] || 'txt' : 'txt';
-    blob = new Blob([artifact.content], { type: 'text/plain' });
-    filename = `${artifact.title || 'artifact'}.${ext}`;
-  } else if (artifact.type === 'diff') {
-    blob = new Blob([artifact.diff], { type: 'text/plain' });
-    filename = `${artifact.title || 'artifact'}.diff`;
-  } else if (artifact.type === 'markdown') {
-    blob = new Blob([artifact.markdown], { type: 'text/markdown' });
-    filename = `${artifact.title || 'artifact'}.md`;
-  } else {
-    return;
-  }
-
-  downloadBlob(blob, filename);
-}
-
-// Progress bars — stored separately (upserted by id, not appended)
-/** Map<sessionId, Map<progressId, {label, percent, done}>> */
-const progressBars = new Map();
-
-function getProgressBars(sessionId) {
-  return progressBars.get(sessionId) || new Map();
-}
-
-function handleProgress(sessionId, artifact) {
-  if (!progressBars.has(sessionId)) progressBars.set(sessionId, new Map());
-  const bars = progressBars.get(sessionId);
-
-  if (artifact.done) {
-    // Mark as done, remove after a short delay
-    bars.set(artifact.id, { ...artifact });
-    if (sessionId === state.activeId) renderArtifacts();
-    setTimeout(() => {
-      bars.delete(artifact.id);
-      if (sessionId === state.activeId) renderArtifacts();
-    }, 3000);
-  } else {
-    bars.set(artifact.id, artifact);
-    if (sessionId === state.activeId) renderArtifacts();
-  }
-
-  if (!state.artifactsVisible) {
-    state.artifactsVisible = true;
-    $artifactsPanel.classList.remove('hidden');
-  }
-}
-
-// Pin artifact
-function handlePin(sessionId, index) {
-  const artifacts = state.artifacts.get(sessionId);
-  if (!artifacts) return;
-
-  const idx = index < 0 ? artifacts.length + index : index;
-  if (idx >= 0 && idx < artifacts.length) {
-    artifacts[idx].pinned = true;
-    if (sessionId === state.activeId) renderArtifacts();
-  }
-}
-
-// Open URL with confirmation
-async function handleOpenUrl(artifact) {
-  const label = artifact.label || artifact.url;
-  const ok = await confirm(`Claude wants to open a URL:\n\n${label}\n\n${artifact.url}`);
-  send({ type: 'url_response', requestId: artifact.requestId, opened: ok });
-  if (ok) {
-    window.open(artifact.url, '_blank', 'noopener,noreferrer');
-  }
-}
 
 document.getElementById('btn-retry').addEventListener('click', () => {
   const session = state.sessions.get(state.activeId);
@@ -1934,11 +1635,6 @@ document.getElementById('btn-retry').addEventListener('click', () => {
   updateStatusUI();
 });
 
-document.getElementById('btn-artifacts').addEventListener('click', () => {
-  state.artifactsVisible = !state.artifactsVisible;
-  $artifactsPanel.classList.toggle('hidden', !state.artifactsVisible);
-  if (state.artifactsVisible) renderArtifacts();
-});
 
 // ---------------------------------------------------------------------------
 // New Session dialog with folder autocomplete
@@ -2146,7 +1842,7 @@ async function boot() {
     showAuthScreen();
   } else {
     hideAuthScreen();
-    connect();
+    startWebSocket();
   }
 }
 
