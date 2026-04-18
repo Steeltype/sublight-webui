@@ -29,6 +29,8 @@ const $inputBar      = document.getElementById('input-bar');
 const $promptInput   = document.getElementById('prompt-input');
 const $btnSend       = document.getElementById('btn-send');
 const $btnAbort      = document.getElementById('btn-abort');
+const $queueBar      = document.getElementById('queue-bar');
+const $statusStrip   = document.getElementById('status-strip');
 const $authScreen    = document.getElementById('auth-screen');
 const $authForm      = document.getElementById('auth-form');
 const $authToken     = document.getElementById('auth-token');
@@ -731,6 +733,14 @@ function handleServerMessage(msg) {
         // nesting depth (a Task subagent can spawn another Task).
         toolContainers: new Map(),
         costUsd: null,
+        queue: [],
+        // Status-strip tracking: turnStartedAt is when stream_start arrived,
+        // lastStreamAt is when the most recent text chunk landed, and
+        // outstandingTools maps tool_use_id → { name, startedAt } until the
+        // matching tool_result fills it.
+        turnStartedAt: 0,
+        lastStreamAt: 0,
+        outstandingTools: new Map(),
       };
       state.sessions.set(msg.sessionId, session);
       switchSession(msg.sessionId);
@@ -750,6 +760,10 @@ function handleServerMessage(msg) {
         pendingToolCards: new Map(),
         toolContainers: new Map(),
         costUsd: null,
+        queue: [],
+        turnStartedAt: 0,
+        lastStreamAt: 0,
+        outstandingTools: new Map(),
       };
       state.sessions.set(msg.sessionId, session);
       switchSession(msg.sessionId);
@@ -780,6 +794,10 @@ function handleServerMessage(msg) {
           pendingToolCards: new Map(),
           toolContainers: new Map(),
           costUsd: null,
+          queue: [],
+          turnStartedAt: 0,
+          lastStreamAt: 0,
+          outstandingTools: new Map(),
         };
         state.sessions.set(s.sessionId, session);
         rehydrateSessionFromLog(s.sessionId).catch((err) => {
@@ -792,6 +810,10 @@ function handleServerMessage(msg) {
       // there's at least one session, switch to the first.
       if (!state.activeId && msg.sessions?.length) {
         switchSession(msg.sessions[0].sessionId);
+      }
+      // A reattached session may already be busy — spin up the ticker if so.
+      if ([...state.sessions.values()].some((s) => s.status === 'busy')) {
+        startStatusTicker();
       }
       break;
     }
@@ -809,9 +831,13 @@ function handleServerMessage(msg) {
         s.status = 'busy';
         s.streamingText = '';
         s.streamingEl = null;
+        s.turnStartedAt = Date.now();
+        s.lastStreamAt = 0;
+        s.outstandingTools.clear();
       }
       updateStatusUI();
       renderSidebar();
+      startStatusTicker();
       break;
     }
 
@@ -830,10 +856,13 @@ function handleServerMessage(msg) {
         s.streamingEl = null;
         s.streamingText = '';
         s.pendingToolCards.clear();
+        s.outstandingTools.clear();
         if (msg.stderr) appendError(s, msg.stderr);
       }
       updateStatusUI();
       renderSidebar();
+      maybeStopStatusTicker();
+      if (s) drainQueue(s);
       break;
     }
 
@@ -842,18 +871,24 @@ function handleServerMessage(msg) {
       if (s) {
         appendError(s, msg.message);
         s.status = 'idle';
+        s.outstandingTools.clear();
       } else {
         console.error('[server]', msg.message);
       }
       updateStatusUI();
       renderSidebar();
+      maybeStopStatusTicker();
+      if (s) drainQueue(s);
       break;
     }
 
     case 'session_closed': {
       state.sessions.delete(msg.sessionId);
       removeSessionNotes(msg.sessionId);
-      if (state.activeId === msg.sessionId) state.activeId = null;
+      if (state.activeId === msg.sessionId) {
+        state.activeId = null;
+        renderQueue(null);
+      }
       renderSidebar();
       renderChat();
       break;
@@ -988,7 +1023,7 @@ function handleClaudeEvent(session, event) {
 
       for (const block of content) {
         if (block.type === 'thinking' && block.thinking) {
-          if (session.streamingText && session.streamingEl) finalizeStreaming(session);
+          if (session.streamingText) finalizeStreaming(session);
           if (isActive) {
             appendThinking(session, block.thinking);
           } else {
@@ -998,6 +1033,7 @@ function handleClaudeEvent(session, event) {
 
         if (block.type === 'text' && block.text) {
           session.streamingText += block.text;
+          session.lastStreamAt = Date.now();
           if (isActive) {
             ensureStreamingEl(session);
             renderStreamingText(session);
@@ -1005,7 +1041,8 @@ function handleClaudeEvent(session, event) {
         }
 
         if (block.type === 'tool_use') {
-          if (session.streamingText && session.streamingEl) finalizeStreaming(session);
+          if (session.streamingText) finalizeStreaming(session);
+          session.outstandingTools.set(block.id, { name: block.name, startedAt: Date.now() });
           if (isActive) {
             appendToolUse(session, block);
           } else {
@@ -1014,6 +1051,7 @@ function handleClaudeEvent(session, event) {
         }
 
         if (block.type === 'tool_result') {
+          session.outstandingTools.delete(block.tool_use_id);
           if (isActive) {
             fillToolResult(session, block);
           } else {
@@ -1050,6 +1088,11 @@ function handleClaudeEvent(session, event) {
       break;
     }
   }
+
+  // Keep the status strip snappy — the ticker updates it every 500ms for
+  // elapsed counters, but state transitions (tool_use, tool_result) feel
+  // laggy at that cadence. Re-render per event for the active session.
+  if (isActive) renderStatusStrip(session);
 }
 
 // ---------------------------------------------------------------------------
@@ -1088,13 +1131,21 @@ function renderStreamingText(session) {
 }
 
 function finalizeStreaming(session) {
-  if (!session.streamingEl) return;
-  session.streamingEl.classList.remove('streaming');
-  session.messages.push({
-    role: 'assistant',
-    text: session.streamingText,
-    parentToolUseId: session.currentParentToolUseId || null,
-  });
+  // The DOM bubble only exists when the session was active during streaming.
+  // The accumulated text, however, must be flushed to session.messages
+  // regardless — otherwise background turns finishing on an inactive tab
+  // silently lose their assistant text (the text never makes it into the
+  // array that renderChat replays from on switch-back).
+  if (session.streamingEl) {
+    session.streamingEl.classList.remove('streaming');
+  }
+  if (session.streamingText) {
+    session.messages.push({
+      role: 'assistant',
+      text: session.streamingText,
+      parentToolUseId: session.currentParentToolUseId || null,
+    });
+  }
   session.streamingEl = null;
   session.streamingText = '';
 }
@@ -1236,6 +1287,85 @@ function appendError(session, text) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Message queue — lets the user type the next prompt while Claude is still
+// working on the current one. Each queued item fires automatically as soon
+// as the session goes idle (normal completion OR abort — we don't clear the
+// queue on Stop, so the user can interrupt one bad turn without losing the
+// next three). Click × on a chip to cancel one before it fires.
+// ---------------------------------------------------------------------------
+
+let queueIdCounter = 0;
+
+function enqueueMessage(session, text, attachments) {
+  const id = ++queueIdCounter;
+  session.queue.push({ id, text, attachments: attachments || null });
+  if (session.id === state.activeId) {
+    renderQueue(session);
+    renderStatusStrip(session);
+  }
+}
+
+function removeQueuedItem(session, id) {
+  session.queue = session.queue.filter((item) => item.id !== id);
+  if (session.id === state.activeId) {
+    renderQueue(session);
+    renderStatusStrip(session);
+  }
+}
+
+function renderQueue(session) {
+  $queueBar.replaceChildren();
+  if (!session || session.queue.length === 0) {
+    $queueBar.classList.add('hidden');
+    return;
+  }
+  $queueBar.classList.remove('hidden');
+  for (const item of session.queue) {
+    const chip = document.createElement('div');
+    chip.className = 'queued-item';
+    chip.title = item.text;
+
+    const textEl = document.createElement('span');
+    textEl.className = 'queued-text';
+    textEl.textContent = item.text;
+    chip.appendChild(textEl);
+
+    if (item.attachments?.length) {
+      const attachEl = document.createElement('span');
+      attachEl.className = 'queued-attach';
+      attachEl.textContent = `+${item.attachments.length}📎`;
+      chip.appendChild(attachEl);
+    }
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'queued-remove';
+    removeBtn.textContent = '\u00d7';
+    removeBtn.title = 'Remove from queue';
+    removeBtn.addEventListener('click', () => removeQueuedItem(session, item.id));
+    chip.appendChild(removeBtn);
+
+    $queueBar.appendChild(chip);
+  }
+}
+
+// Called when a session flips from busy to idle. Pops the next queued item
+// (if any) and sends it as if the user had just hit Ctrl+Enter. Fires
+// regardless of whether the session is the active one — the user queued it
+// expecting it to run.
+function drainQueue(session) {
+  if (!session || session.queue.length === 0) return;
+  if (session.status !== 'idle') return;
+  const next = session.queue.shift();
+  if (session.id === state.activeId) {
+    renderQueue(session);
+    renderStatusStrip(session);
+  }
+  appendUserMessage(session, next.text, next.attachments);
+  send({ type: 'message', sessionId: session.id, text: next.text, attachments: next.attachments });
+}
+
 function scrollToBottom() {
   requestAnimationFrame(() => {
     $messages.scrollTop = $messages.scrollHeight;
@@ -1276,11 +1406,16 @@ function renderChat() {
   $btnCopyCwd.title = session.cwd ? `Copy: ${session.cwd}` : 'No working directory';
   updateStatusUI();
   updateRuntimeStrip(session);
+  renderQueue(session);
 
   $messages.replaceChildren();
   // Rebuild toolContainers from scratch — we're about to re-append every
   // message, and nested children resolve parents via this map.
   session.toolContainers = new Map();
+  // Drop any stale streamingEl reference pointing at a detached DOM node
+  // from a previous active period. The block further down will recreate a
+  // fresh bubble if streaming is still in progress.
+  session.streamingEl = null;
 
   // Resolve the container for a message: if it has a parent and we've
   // already rendered that parent's children container, use it; otherwise
@@ -1417,14 +1552,21 @@ function updateStatusUI() {
   if (!session) return;
 
   const busy = session.status === 'busy';
-  $btnSend.classList.toggle('hidden', busy);
+  // Send button stays visible even when busy — it queues the message for
+  // delivery as soon as the current turn completes. The Stop button sits
+  // alongside it so the user can still interrupt the in-flight turn.
+  $btnSend.textContent = busy ? 'Queue' : 'Send';
+  $btnSend.title = busy
+    ? 'Queue for after current turn (Ctrl+Enter)'
+    : 'Send (Ctrl+Enter)';
   $btnAbort.classList.toggle('hidden', !busy);
-  $promptInput.disabled = busy;
+  $promptInput.disabled = false;
   // Retry is available only when idle and a prior user turn exists to resend.
   const retryBtn = document.getElementById('btn-retry');
   if (retryBtn) {
     retryBtn.classList.toggle('hidden', busy || !session.lastUserTurn);
   }
+  renderStatusStrip(session);
 
   if (busy) {
     $chatStatus.textContent = '';
@@ -1440,6 +1582,137 @@ function updateStatusUI() {
     $chatStatus.textContent = `$${session.costUsd.toFixed(4)}`;
   } else {
     $chatStatus.textContent = 'idle';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Status strip — the always-visible activity line above the composer
+// ---------------------------------------------------------------------------
+
+// Streaming is "fresh" if a text chunk landed within this many ms. Past that
+// we consider the tokens stale and switch to the generic "Working" state,
+// which usually means we're waiting on a tool call or subagent.
+const STREAM_FRESH_MS = 1500;
+
+function formatElapsed(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return `${m}m ${rem.toString().padStart(2, '0')}s`;
+}
+
+function renderStatusStrip(session) {
+  $statusStrip.replaceChildren();
+  if (!session) {
+    const dot = document.createElement('span');
+    dot.className = 'status-dot idle';
+    const label = document.createElement('span');
+    label.className = 'status-label';
+    label.textContent = 'No active session';
+    $statusStrip.append(dot, label);
+    return;
+  }
+
+  const now = Date.now();
+  const busy = session.status === 'busy';
+
+  const dot = document.createElement('span');
+  dot.className = 'status-dot';
+  $statusStrip.appendChild(dot);
+
+  const label = document.createElement('span');
+  label.className = 'status-label';
+  $statusStrip.appendChild(label);
+
+  if (!busy) {
+    dot.classList.add('idle');
+    if (session.costUsd != null) {
+      label.textContent = 'Ready';
+      const meta = document.createElement('span');
+      meta.className = 'status-meta';
+      meta.textContent = `$${session.costUsd.toFixed(4)} last turn`;
+      $statusStrip.appendChild(meta);
+    } else {
+      label.textContent = 'Ready';
+    }
+    if (session.queue?.length) {
+      const meta = document.createElement('span');
+      meta.className = 'status-meta';
+      meta.textContent = `${session.queue.length} queued`;
+      $statusStrip.appendChild(meta);
+    }
+    return;
+  }
+
+  // Busy. Decide the sub-state.
+  const outstanding = session.outstandingTools;
+  const latestTool = outstanding.size > 0
+    ? [...outstanding.values()].sort((a, b) => b.startedAt - a.startedAt)[0]
+    : null;
+  const streamingFresh = session.lastStreamAt
+    && (now - session.lastStreamAt) < STREAM_FRESH_MS;
+
+  if (latestTool) {
+    dot.classList.add('tool');
+    label.textContent = 'Running ';
+    const toolEl = document.createElement('span');
+    toolEl.className = 'status-tool';
+    toolEl.textContent = latestTool.name;
+    label.appendChild(toolEl);
+    if (outstanding.size > 1) {
+      const extra = document.createElement('span');
+      extra.textContent = ` +${outstanding.size - 1} more`;
+      extra.style.color = 'var(--text-dim)';
+      label.appendChild(extra);
+    }
+    const elapsed = document.createElement('span');
+    elapsed.className = 'status-elapsed';
+    elapsed.textContent = formatElapsed(now - latestTool.startedAt);
+    $statusStrip.appendChild(elapsed);
+  } else if (streamingFresh) {
+    dot.classList.add('streaming');
+    label.textContent = 'Streaming response';
+    const elapsed = document.createElement('span');
+    elapsed.className = 'status-elapsed';
+    elapsed.textContent = formatElapsed(now - session.turnStartedAt);
+    $statusStrip.appendChild(elapsed);
+  } else {
+    dot.classList.add('waiting');
+    label.textContent = 'Working';
+    const elapsed = document.createElement('span');
+    elapsed.className = 'status-elapsed';
+    elapsed.textContent = formatElapsed(now - session.turnStartedAt);
+    $statusStrip.appendChild(elapsed);
+  }
+
+  if (session.queue?.length) {
+    const meta = document.createElement('span');
+    meta.className = 'status-meta';
+    meta.textContent = `${session.queue.length} queued`;
+    $statusStrip.appendChild(meta);
+  }
+}
+
+// Tick the status strip every 500ms while anything is busy so elapsed
+// counters stay live. Started on stream_start; stopped when nothing is
+// busy to avoid a permanent background timer.
+let statusTickerId = null;
+
+function startStatusTicker() {
+  if (statusTickerId != null) return;
+  statusTickerId = setInterval(() => {
+    const session = state.sessions.get(state.activeId);
+    if (session) renderStatusStrip(session);
+  }, 500);
+}
+
+function maybeStopStatusTicker() {
+  const anyBusy = [...state.sessions.values()].some((s) => s.status === 'busy');
+  if (anyBusy) return;
+  if (statusTickerId != null) {
+    clearInterval(statusTickerId);
+    statusTickerId = null;
   }
 }
 
@@ -1532,11 +1805,17 @@ $inputBar.addEventListener('submit', (e) => {
   if (!text || !state.activeId) return;
 
   const session = state.sessions.get(state.activeId);
-  if (!session || session.status === 'busy') return;
+  if (!session) return;
 
   const attachments = consumeAttachments();
-  appendUserMessage(session, text, attachments);
-  send({ type: 'message', sessionId: state.activeId, text, attachments });
+
+  if (session.status === 'busy') {
+    // Queue for after the current turn completes. drainQueue() will fire it.
+    enqueueMessage(session, text, attachments);
+  } else {
+    appendUserMessage(session, text, attachments);
+    send({ type: 'message', sessionId: state.activeId, text, attachments });
+  }
   $promptInput.value = '';
   autoResizeInput();
 });
