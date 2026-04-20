@@ -360,6 +360,50 @@ html, body {
   background: rgba(0, 0, 0, 0.6);
 }
 
+/* Claude Code import picker — mirrors the logs dialog shape. */
+#claude-import-dialog {
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 24px;
+  max-width: 700px;
+  width: 90vw;
+  max-height: 80vh;
+}
+
+#claude-import-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+#claude-import-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+#claude-import-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+}
+
+#claude-import-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+#claude-import-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+}
+
 #logs-container {
   display: flex;
   flex-direction: column;

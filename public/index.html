@@ -207,6 +207,7 @@
         <label class="logs-toolbar-toggle">
           <input type="checkbox" id="logs-show-stubs"> Show stubs
         </label>
+        <button type="button" id="btn-open-claude-import">Import from Claude Code…</button>
       </div>
       <div id="logs-list"></div>
       <div id="logs-viewer" class="hidden">
@@ -219,6 +220,29 @@
       <div class="dialog-actions">
         <button type="button" id="logs-clear-all" class="danger-btn">Clear Old Logs</button>
         <button type="button" id="logs-close">Close</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- ─── Claude Code import picker ─────────────────────────────── -->
+  <dialog id="claude-import-dialog">
+    <div id="claude-import-container">
+      <div id="claude-import-header">
+        <h2>Import from Claude Code</h2>
+        <span id="claude-import-count" class="setting-value"></span>
+      </div>
+      <p class="logs-notice">Resume a session from your Claude CLI history. Sublight spawns the Claude process with <code>--resume</code> so the full conversation context loads; new turns stream into a fresh Sublight log.</p>
+      <div class="logs-toolbar">
+        <input type="search" id="claude-import-filter" placeholder="Filter by cwd, date, or message..." autocomplete="off">
+      </div>
+      <label class="setting-label session-bypass-label">
+        <input type="checkbox" id="claude-import-bypass" checked>
+        Skip permission prompts
+        <span class="option-warning">Claude will have unrestricted file and shell access</span>
+      </label>
+      <div id="claude-import-list"></div>
+      <div class="dialog-actions">
+        <button type="button" id="claude-import-close">Close</button>
       </div>
     </div>
   </dialog>

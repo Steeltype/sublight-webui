@@ -756,6 +756,146 @@ document.getElementById('logs-close').addEventListener('click', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Claude Code session import picker
+// ---------------------------------------------------------------------------
+
+const $claudeImportDialog = document.getElementById('claude-import-dialog');
+const $claudeImportList   = document.getElementById('claude-import-list');
+const $claudeImportFilter = document.getElementById('claude-import-filter');
+const $claudeImportBypass = document.getElementById('claude-import-bypass');
+const $claudeImportCount  = document.getElementById('claude-import-count');
+
+let cachedClaudeSessions = [];
+
+document.getElementById('btn-open-claude-import').addEventListener('click', () => {
+  // Close the logs dialog first so the import picker doesn't stack on top of it.
+  if ($logsDialog.open) $logsDialog.close();
+  openClaudeImportDialog();
+});
+document.getElementById('claude-import-close').addEventListener('click', () => $claudeImportDialog.close());
+$claudeImportFilter.addEventListener('input', renderClaudeImportList);
+
+async function openClaudeImportDialog() {
+  cachedClaudeSessions = [];
+  $claudeImportCount.textContent = 'loading…';
+  $claudeImportList.replaceChildren();
+  $claudeImportDialog.showModal();
+  try {
+    const res = await authFetch('/api/claude-code-sessions');
+    if (!res.ok) {
+      $claudeImportCount.textContent = 'failed to load';
+      const err = document.createElement('p');
+      err.className = 'logs-empty';
+      err.textContent = `Failed to list sessions (HTTP ${res.status}).`;
+      $claudeImportList.appendChild(err);
+      return;
+    }
+    const data = await res.json();
+    cachedClaudeSessions = data.sessions || [];
+    $claudeImportCount.textContent = `${cachedClaudeSessions.length} session${cachedClaudeSessions.length === 1 ? '' : 's'}`;
+    renderClaudeImportList();
+  } catch (err) {
+    console.error('Failed to load Claude Code sessions', err);
+    $claudeImportCount.textContent = 'failed to load';
+  }
+}
+
+function renderClaudeImportList() {
+  const q = ($claudeImportFilter.value || '').trim().toLowerCase();
+  const filtered = q
+    ? cachedClaudeSessions.filter((s) => {
+        const hay = [s.cwd || '', s.sessionId, s.lastTurnAt || '', s.firstUserMessage || ''].join(' ').toLowerCase();
+        return hay.includes(q);
+      })
+    : cachedClaudeSessions;
+
+  $claudeImportList.replaceChildren();
+  if (filtered.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'logs-empty';
+    empty.textContent = q ? `No sessions match "${q}".` : 'No Claude Code sessions found.';
+    $claudeImportList.appendChild(empty);
+    return;
+  }
+
+  for (const s of filtered) {
+    const row = document.createElement('div');
+    row.className = 'log-row';
+
+    const info = document.createElement('div');
+    info.className = 'log-info';
+
+    const name = document.createElement('div');
+    name.className = 'log-name';
+    name.textContent = shortPath(s.cwd) || s.sessionId.slice(0, 8);
+    info.appendChild(name);
+
+    const meta = document.createElement('div');
+    meta.className = 'log-meta';
+    const parts = [formatLogDate(s.lastTurnAt)];
+    parts.push(formatBytes(s.sizeBytes));
+    parts.push(s.sessionId.slice(0, 8));
+    meta.textContent = parts.join(' \u00b7 ');
+    info.appendChild(meta);
+
+    if (s.firstUserMessage) {
+      const snippet = document.createElement('div');
+      snippet.className = 'log-meta';
+      snippet.textContent = s.firstUserMessage.length > 120
+        ? s.firstUserMessage.slice(0, 119) + '\u2026'
+        : s.firstUserMessage;
+      info.appendChild(snippet);
+    }
+
+    row.appendChild(info);
+
+    const actions = document.createElement('div');
+    actions.className = 'log-actions';
+
+    if (s.live) {
+      const liveTag = document.createElement('span');
+      liveTag.className = 'log-tag';
+      liveTag.textContent = 'live';
+      actions.appendChild(liveTag);
+    } else if (!s.cwd) {
+      const tag = document.createElement('span');
+      tag.className = 'log-tag';
+      tag.textContent = 'no cwd';
+      tag.title = 'No working directory found in the transcript — cannot import';
+      actions.appendChild(tag);
+    } else {
+      const resumeBtn = document.createElement('button');
+      resumeBtn.textContent = 'Resume';
+      resumeBtn.title = 'Spawn claude --resume with the current Sublight settings';
+      resumeBtn.addEventListener('click', () => resumeClaudeSession(s));
+      actions.appendChild(resumeBtn);
+    }
+
+    row.appendChild(actions);
+    $claudeImportList.appendChild(row);
+  }
+}
+
+function resumeClaudeSession(s) {
+  if (!s.cwd) {
+    showToast('No cwd recorded for this session');
+    return;
+  }
+  const bypass = $claudeImportBypass.checked;
+  send({
+    type: 'import_claude_session',
+    claudeSessionId: s.sessionId,
+    cwd: s.cwd,
+    permissionMode: bypass ? 'bypass' : state.defaultPermissionMode,
+    // Non-bypass mode requires an allowedTools list to avoid hanging. For
+    // simplicity we always go bypass here since the user is resuming an
+    // interactive CLI session that was using full permissions anyway.
+    allowedTools: bypass ? null : ['Read', 'Glob', 'Grep'],
+  });
+  $claudeImportDialog.close();
+}
+
+// ---------------------------------------------------------------------------
 // WebSocket connection with exponential backoff
 // ---------------------------------------------------------------------------
 
