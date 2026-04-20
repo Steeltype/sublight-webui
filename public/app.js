@@ -825,7 +825,7 @@ function renderClaudeImportList() {
 
   for (const s of filtered) {
     const row = document.createElement('div');
-    row.className = 'log-row';
+    row.className = 'claude-import-item';
 
     const info = document.createElement('div');
     info.className = 'log-info';
@@ -1639,6 +1639,8 @@ function renderChat() {
   $emptyState.classList.add('hidden');
   $chatArea.classList.remove('hidden');
   $chatTitle.textContent = session.name || 'Session';
+  $chatTitle.setAttribute('aria-label',
+    session.cwd ? `Session ${session.name || ''} — working directory ${session.cwd}` : `Session ${session.name || ''}`);
   $btnCopyCwd.title = session.cwd ? `Copy: ${session.cwd}` : 'No working directory';
   updateStatusUI();
   updateRuntimeStrip(session);
@@ -1972,6 +1974,13 @@ function renderSidebar() {
     const nameSpan = document.createElement('span');
     nameSpan.className = 'session-name';
     nameSpan.textContent = session.name || 'Session';
+    if (session.imported) {
+      const badge = document.createElement('span');
+      badge.className = 'session-imported-badge';
+      badge.textContent = 'imported';
+      badge.title = 'Resumed from a Claude Code CLI session';
+      nameSpan.appendChild(badge);
+    }
     if (session.status === 'busy') {
       const dots = document.createElement('span');
       dots.className = 'sidebar-working-dots';
@@ -2067,8 +2076,17 @@ function startRename(li, session) {
     nameSpan.classList.remove('hidden');
     closeBtn.classList.remove('hidden');
     nameSpan.textContent = session.name;
+    if (session.imported) {
+      const badge = document.createElement('span');
+      badge.className = 'session-imported-badge';
+      badge.textContent = 'imported';
+      badge.title = 'Resumed from a Claude Code CLI session';
+      nameSpan.appendChild(badge);
+    }
     if (session.id === state.activeId) {
       $chatTitle.textContent = session.name;
+      $chatTitle.setAttribute('aria-label',
+        session.cwd ? `Session ${session.name} — working directory ${session.cwd}` : `Session ${session.name}`);
     }
   }
 
@@ -2264,6 +2282,18 @@ const $dialogCwd    = document.getElementById('session-cwd');
 const $cwdSuggest   = document.getElementById('cwd-suggestions');
 const RECENT_KEY    = 'sublight_recent_dirs';
 const MAX_RECENTS   = 10;
+const ALLOWED_KEY   = 'sublight_last_allowed_tools';
+
+// Preset lists for the "Allowed tools" chips. Progressive: each step adds
+// capability on top of the previous one so users can pick the smallest
+// level that covers their task. Claude's native tool names only — users
+// can still hand-edit the field for `Bash(git log *)` style sub-patterns.
+const TOOL_PRESETS = {
+  readonly: ['Read', 'Glob', 'Grep'],
+  edit:     ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'NotebookEdit'],
+  web:      ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'NotebookEdit', 'WebFetch', 'WebSearch'],
+  shell:    ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'NotebookEdit', 'WebFetch', 'WebSearch', 'Bash', 'Task', 'TodoWrite'],
+};
 
 function getRecentDirs() {
   try { return JSON.parse(localStorage.getItem(RECENT_KEY)) || []; }
@@ -2393,12 +2423,48 @@ $dialogCwd.addEventListener('keydown', (e) => {
 
 function openNewSessionDialog() {
   $dialogCwd.value = state.defaultCwd || '';
-  document.getElementById('session-bypass').checked = state.defaultPermissionMode === 'bypass';
+  const bypassBox = document.getElementById('session-bypass');
+  bypassBox.checked = state.defaultPermissionMode === 'bypass';
+  // Prefill the allowed-tools field with whatever the user picked last time
+  // so they don't have to retype their preferred allowlist for every session.
+  const allowedInput = document.getElementById('session-allowed-tools');
+  allowedInput.value = localStorage.getItem(ALLOWED_KEY) || '';
+  updateAllowedToolsEnabled();
   $cwdSuggest.classList.add('hidden');
   $dialog.showModal();
   $dialogCwd.focus();
   $dialogCwd.select();
 }
+
+// The allowed-tools chips and text field are irrelevant in bypass mode —
+// Claude ignores the allowlist when `--dangerously-skip-permissions` is on.
+// Disabling the row makes that obvious instead of leaving a live-looking
+// control that has no effect.
+function updateAllowedToolsEnabled() {
+  const bypass = document.getElementById('session-bypass').checked;
+  const input  = document.getElementById('session-allowed-tools');
+  const row    = document.getElementById('session-allowed-presets');
+  input.disabled = bypass;
+  row.classList.toggle('disabled', bypass);
+  for (const b of row.querySelectorAll('button')) b.disabled = bypass;
+}
+
+// Preset chips fill the input with a known-good tool list. Users can still
+// edit afterward; a chip click just rewrites the field wholesale.
+document.getElementById('session-allowed-presets').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-preset]');
+  if (!btn || btn.disabled) return;
+  const key = btn.dataset.preset;
+  const input = document.getElementById('session-allowed-tools');
+  if (key === 'clear') {
+    input.value = '';
+  } else if (TOOL_PRESETS[key]) {
+    input.value = TOOL_PRESETS[key].join(' ');
+  }
+  input.focus();
+});
+
+document.getElementById('session-bypass').addEventListener('change', updateAllowedToolsEnabled);
 
 document.getElementById('new-session-form').addEventListener('submit', (e) => {
   e.preventDefault();
@@ -2412,6 +2478,11 @@ document.getElementById('new-session-form').addEventListener('submit', (e) => {
   const allowedTools = allowedRaw
     ? (allowedRaw.match(/"[^"]+"|\S+/g) || []).map((s) => s.replace(/^"|"$/g, ''))
     : null;
+  // Remember the raw string so next time the dialog opens we prefill with
+  // the user's last allowlist — quoted sub-patterns and all. Only persist
+  // when the user is actually using the list (non-bypass) so bypass-mode
+  // submits don't wipe out a previously saved list.
+  if (!bypass && allowedRaw) localStorage.setItem(ALLOWED_KEY, allowedRaw);
   send({
     type: 'new_session',
     cwd,

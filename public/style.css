@@ -304,6 +304,26 @@ html, body {
 
 .setting-inline input[type="number"]:focus { border-color: var(--accent); }
 
+/* Plain button sitting directly in a settings row (e.g. "View recent
+   events" in the audit entry). Matches the inline-toolbar button language
+   used elsewhere so it doesn't fall back to the OS default button chrome. */
+.setting-inline > button {
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 5px 12px;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.setting-inline > button:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+
 .setting-value {
   color: var(--text-dim);
   font-size: 13px;
@@ -331,20 +351,10 @@ html, body {
 
 .primary-btn:hover { background: var(--accent); }
 
-/* ─── Settings dialog ────────────────────────────────────────── */
+/* ─── Settings dialog — narrower than the default, no other overrides. */
 
 #settings-dialog {
-  background: var(--bg-sidebar);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text);
-  padding: 24px;
-  max-width: 460px;
-  width: 90vw;
-}
-
-#settings-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.6);
+  width: min(520px, 90vw);
 }
 
 #settings-form {
@@ -373,47 +383,33 @@ html, body {
   padding-bottom: 4px;
 }
 
-/* ─── Logs dialog ────────────────────────────────────────────── */
+/* ─── Dialog base ─────────────────────────────────────────────
+   Every modal (logs, settings, new session, audit, import, confirm,
+   palette) shares the same shell so they feel like one family instead of
+   drifting per-addition. Individual dialogs below only override width or
+   padding when they need to. */
 
-#logs-dialog {
+dialog {
   background: var(--bg-sidebar);
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
+  font-family: inherit;
   padding: 24px;
-  max-width: 600px;
-  width: 90vw;
-  max-height: 80vh;
+  width: min(720px, 90vw);
+  max-height: 85vh;
 }
 
-#logs-dialog[open] {
-  display: flex;
-  flex-direction: column;
-}
-
-#logs-dialog::backdrop {
+dialog::backdrop {
   background: rgba(0, 0, 0, 0.6);
 }
 
-/* Claude Code import picker — mirrors the logs dialog shape. */
-#claude-import-dialog {
-  background: var(--bg-sidebar);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text);
-  padding: 24px;
-  max-width: 700px;
-  width: 90vw;
-  max-height: 80vh;
-}
+/* ─── Logs dialog ────────────────────────────────────────────── */
 
+#logs-dialog[open],
 #claude-import-dialog[open] {
   display: flex;
   flex-direction: column;
-}
-
-#claude-import-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.6);
 }
 
 #claude-import-container {
@@ -523,6 +519,33 @@ html, body {
   flex-shrink: 0;
 }
 
+/* Claude Code import picker — each row is a selectable card, not a flat
+   list entry. Slightly heavier border + stacked info so the cwd, date, and
+   first-message snippet all read clearly and the "Resume" action reads as
+   the primary affordance. */
+.claude-import-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.claude-import-item:hover {
+  background: var(--bg-hover);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.claude-import-item .log-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .log-actions button {
   background: var(--bg-input);
   color: var(--text);
@@ -558,6 +581,15 @@ html, body {
   align-items: center;
   gap: 10px;
   margin-bottom: 12px;
+  /* Long "Import from Claude Code…" button + search + toggle don't fit on
+     narrow widths. Let the row wrap so no control overflows the dialog. */
+  flex-wrap: wrap;
+}
+
+.logs-toolbar > #logs-filter {
+  /* Keep the search field dominant when the row wraps; button and toggle
+     drop beneath on their own row rather than squeezing next to it. */
+  flex: 1 1 240px;
 }
 
 .logs-toolbar > button {
@@ -634,15 +666,8 @@ html, body {
   color: var(--text);
 }
 
-/* Audit log viewer */
+/* Audit log viewer — shares the base dialog shell; only overrides layout. */
 #audit-dialog {
-  width: min(720px, 92vw);
-  max-height: 80vh;
-  padding: 20px 24px;
-  background: var(--bg-sidebar);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -861,6 +886,63 @@ html, body {
   border-color: var(--accent);
 }
 
+#session-allowed-tools:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Preset chip row — quick-fill the allowlist with a known-good set. Chips
+   are progressive (readonly → edit → web → shell) so left-to-right reads as
+   growing capability. Clear sits at the end in muted styling. */
+.allowed-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 20px 8px 20px;
+}
+
+.allowed-presets .preset-chip {
+  background: var(--bg-input);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  padding: 3px 10px;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.allowed-presets .preset-chip:hover {
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg-input));
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+
+.allowed-presets .preset-chip-clear {
+  margin-left: auto;
+  color: color-mix(in srgb, var(--error) 70%, var(--text-dim));
+  border-style: dashed;
+}
+
+.allowed-presets .preset-chip-clear:hover {
+  background: color-mix(in srgb, var(--error) 15%, transparent);
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 50%, var(--border));
+}
+
+.allowed-presets.disabled .preset-chip,
+.allowed-presets .preset-chip:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.allowed-presets.disabled .preset-chip:hover {
+  background: var(--bg-input);
+  color: var(--text-dim);
+  border-color: var(--border);
+}
+
 .session-bypass-label .option-warning {
   width: 100%;
   margin-left: 24px;
@@ -971,6 +1053,24 @@ html, body {
 #session-list li:hover .session-close { opacity: 1; }
 #session-list .session-close:hover { color: var(--error); }
 
+/* Small inline tag for sessions that were resumed from a Claude Code CLI
+   transcript. Keeps the label visible in the sidebar so it's clear at a
+   glance which sessions carry pre-existing context. */
+.session-imported-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 9px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 8px;
+  vertical-align: middle;
+}
+
 /* ─── Main area ───────────────────────────────────────────────── */
 
 #main {
@@ -1009,6 +1109,11 @@ html, body {
   display: flex;
   align-items: center;
   gap: 12px;
+  /* The action cluster is wide enough that it crushes between ~640px and
+     the mobile breakpoint. Letting the header wrap means the cluster drops
+     to its own row cleanly instead of overflowing. */
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
 
 #chat-title {
@@ -1140,19 +1245,12 @@ html, body {
   content: none !important;
 }
 
-/* Command palette */
+/* Command palette — narrower than the other dialogs and its input/list
+   extend edge-to-edge so padding is removed. */
 #palette-dialog {
-  width: min(560px, 92vw);
-  max-width: 560px;
+  width: min(560px, 90vw);
   padding: 0;
-  border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--bg);
-  color: var(--text);
-}
-
-#palette-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.55);
 }
 
 #palette-container {
@@ -1263,6 +1361,8 @@ html, body {
 #chat-actions {
   display: flex;
   gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 #chat-actions button {
@@ -1780,21 +1880,12 @@ dialog:not([open]) {
   display: none !important;
 }
 
-/* ─── New Session dialog ──────────────────────────────────────── */
+/* ─── New Session dialog — padding lives on the inner form so the
+   dialog fill is one flush surface; zero it on the dialog itself. */
 
 #new-session-dialog {
-  background: var(--bg-sidebar);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text);
-  font-family: inherit;
+  width: min(520px, 90vw);
   padding: 0;
-  min-width: 420px;
-  max-width: 90vw;
-}
-
-#new-session-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.6);
 }
 
 #new-session-form {
@@ -2285,21 +2376,11 @@ dialog:not([open]) {
   transform: translateX(-50%) translateY(0);
 }
 
-/* ─── Confirm dialog ──────────────────────────────────────────── */
+/* ─── Confirm dialog — narrow, body-padded shell. */
 
 #confirm-dialog {
-  background: var(--bg-sidebar);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text);
-  font-family: inherit;
+  width: min(440px, 90vw);
   padding: 0;
-  min-width: 360px;
-  max-width: 90vw;
-}
-
-#confirm-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.6);
 }
 
 #confirm-body {

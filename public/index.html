@@ -112,11 +112,11 @@
           <span id="chat-runtime" class="hidden" title=""></span>
           <div id="chat-actions">
             <button id="btn-retry" class="hidden" title="Resend the last user message">Retry</button>
-            <button id="btn-restart" title="Restart the Claude process in place (keeps conversation, reloads MCPs and settings)">Restart</button>
-            <button id="btn-save" title="Export session as markdown">Save</button>
-            <button id="btn-bundle" title="Export full session bundle (markdown + artifacts + raw log)">Bundle</button>
-            <button id="btn-artifacts" title="Toggle artifacts">Artifacts</button>
-            <button id="btn-notes" title="Toggle notes">Notes</button>
+            <button id="btn-restart" title="Reload Claude with current MCPs and settings — conversation is preserved">Restart Claude</button>
+            <button id="btn-save" title="Download the conversation as a Markdown file">Export .md</button>
+            <button id="btn-bundle" title="Download a zip with the Markdown, artifacts, and raw NDJSON log">Export Bundle</button>
+            <button id="btn-artifacts" title="Toggle artifacts panel">Artifacts</button>
+            <button id="btn-notes" title="Toggle notes panel">Notes</button>
           </div>
         </div>
         <div id="chat-body">
@@ -177,6 +177,13 @@
       <label for="session-allowed-tools" class="session-allowed-label">
         Allowed tools <span class="session-allowed-hint">(space-separated, non-bypass mode only)</span>
       </label>
+      <div id="session-allowed-presets" class="allowed-presets" aria-label="Tool allowlist presets">
+        <button type="button" class="preset-chip" data-preset="readonly" title="Read Glob Grep — observe files only">Read-only</button>
+        <button type="button" class="preset-chip" data-preset="edit"     title="adds Edit Write NotebookEdit — modify local files">+ Edit</button>
+        <button type="button" class="preset-chip" data-preset="web"      title="adds WebFetch WebSearch — fetch from the internet">+ Web</button>
+        <button type="button" class="preset-chip" data-preset="shell"    title="adds Bash Task TodoWrite — full standard toolset">+ Shell</button>
+        <button type="button" class="preset-chip preset-chip-clear" data-preset="clear" title="Clear the list">Clear</button>
+      </div>
       <input type="text" id="session-allowed-tools" placeholder='e.g. Read Glob Grep "Bash(git log *)"' autocomplete="off" spellcheck="false">
       <div class="dialog-actions">
         <button type="button" id="dialog-cancel">Cancel</button>
