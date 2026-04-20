@@ -16,6 +16,13 @@
   <script src="vendor/jszip.min.js"></script>
 </head>
 <body>
+  <!-- Connection banner — shown whenever the WebSocket is disconnected and
+       we're retrying. Distinguishes server-down from auth-rejected so a
+       server restart doesn't silently blow away the stored token. -->
+  <div id="connection-banner" class="hidden" role="status" aria-live="polite">
+    <span id="connection-banner-text">Server unreachable — retrying…</span>
+  </div>
+
   <!-- Mobile hamburger — shown only on narrow screens via CSS. -->
   <button type="button" id="btn-mobile-nav" title="Open menu" aria-label="Open menu">☰</button>
   <!-- Mobile scrim for the open sidebar — tapping closes it. -->

@@ -42,6 +42,26 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+/* Connection banner — sits above everything, shows when the WS is
+   disconnected and the client is retrying. Amber so it reads as an alert
+   without implying a fatal error. */
+#connection-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10000;
+  background: var(--accent-amber);
+  color: #1a1a1a;
+  padding: 8px 16px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
 html, body {
   height: 100%;
   overflow: hidden;
