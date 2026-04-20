@@ -724,6 +724,7 @@ function handleServerMessage(msg) {
         name: shortCwd(msg.cwd),
         messages: [],
         status: 'idle',
+        hasUnread: false,
         streamingEl: null,
         streamingText: '',
         pendingToolCards: new Map(),
@@ -755,6 +756,7 @@ function handleServerMessage(msg) {
         name: msg.name || shortCwd(msg.cwd),
         messages: [],
         status: 'idle',
+        hasUnread: false,
         streamingEl: null,
         streamingText: '',
         pendingToolCards: new Map(),
@@ -789,6 +791,7 @@ function handleServerMessage(msg) {
           name: s.name || shortCwd(s.cwd),
           messages: [],
           status: s.status || 'idle',
+          hasUnread: !!s.unread,
           streamingEl: null,
           streamingText: '',
           pendingToolCards: new Map(),
@@ -858,6 +861,13 @@ function handleServerMessage(msg) {
         s.pendingToolCards.clear();
         s.outstandingTools.clear();
         if (msg.stderr) appendError(s, msg.stderr);
+        if (state.activeId !== s.id) {
+          s.hasUnread = true;
+        } else {
+          // Currently viewing — keep server's unread flag in sync so a
+          // reconnect after this turn doesn't resurrect a stale dot.
+          send({ type: 'mark_read', sessionId: s.id });
+        }
       }
       updateStatusUI();
       renderSidebar();
@@ -872,6 +882,11 @@ function handleServerMessage(msg) {
         appendError(s, msg.message);
         s.status = 'idle';
         s.outstandingTools.clear();
+        if (state.activeId !== s.id) {
+          s.hasUnread = true;
+        } else {
+          send({ type: 'mark_read', sessionId: s.id });
+        }
       } else {
         console.error('[server]', msg.message);
       }
@@ -1385,6 +1400,13 @@ function shortCwd(cwd) {
 function switchSession(id) {
   if (state.activeId === id) return;
   state.activeId = id;
+  const session = state.sessions.get(id);
+  if (session) {
+    session.hasUnread = false;
+    // Clear the server-side flag too so other tabs and future reconnects
+    // don't see a stale unread. Idempotent server-side.
+    send({ type: 'mark_read', sessionId: id });
+  }
   renderSidebar();
   renderChat();
   renderNotes();
@@ -1735,6 +1757,12 @@ function renderSidebar() {
       dots.className = 'sidebar-working-dots';
       for (let i = 0; i < 3; i++) { const d = document.createElement('span'); d.textContent = '.'; dots.appendChild(d); }
       nameSpan.appendChild(dots);
+    } else if (session.hasUnread) {
+      const dot = document.createElement('span');
+      dot.className = 'sidebar-unread-dot';
+      dot.title = 'New output — not yet reviewed';
+      dot.setAttribute('aria-label', 'Unread output');
+      nameSpan.appendChild(dot);
     }
 
     // Double-click to rename
@@ -1757,6 +1785,17 @@ function renderSidebar() {
 
     $sidebar.appendChild(li);
   }
+  updateUnreadTitle();
+}
+
+// Prefix the document/tab title with a bullet when any background session
+// has output waiting. Lets the OS badge/taskbar grab attention when Sublight
+// is installed as a PWA or running in a minimized window.
+function updateUnreadTitle() {
+  const anyUnread = [...state.sessions.values()].some((s) => s.hasUnread);
+  const base = 'Sublight';
+  const want = anyUnread ? `\u25CF ${base}` : base;
+  if (document.title !== want) document.title = want;
 }
 
 function startRename(li, session) {

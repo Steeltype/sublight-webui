@@ -948,6 +948,23 @@ html, body {
   40% { opacity: 1; }
 }
 
+/* Unread indicator: idle session has new output the user hasn't seen. */
+.sidebar-unread-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-left: 8px;
+  border-radius: 50%;
+  background: var(--accent-amber);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent-amber) 60%, transparent);
+  vertical-align: middle;
+  animation: unread-pulse 2s ease-in-out infinite;
+}
+@keyframes unread-pulse {
+  0%, 100% { opacity: 0.65; }
+  50%      { opacity: 1; }
+}
+
 #chat-runtime {
   font-size: 11px;
   color: var(--text-dim);
