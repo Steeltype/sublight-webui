@@ -525,6 +525,24 @@ html, body {
   margin-bottom: 12px;
 }
 
+.logs-toolbar > button {
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 12px;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.logs-toolbar > button:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+
 .logs-toolbar-toggle {
   display: flex;
   align-items: center;
