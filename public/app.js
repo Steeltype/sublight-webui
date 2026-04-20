@@ -5,6 +5,14 @@
 import { handleOpenUrl, handlePin, handleProgress, renderArtifacts } from './artifacts.js';
 import { consumeAttachments } from './attachments.js';
 import { authFetch, isTokenRemembered, saveAuthToken } from './auth.js';
+import {
+  getNotificationPermission,
+  isNotificationsSupported,
+  loadNotificationPref,
+  requestNotificationPermission,
+  saveNotificationPref,
+  showSessionNotification,
+} from './notifications.js';
 import { confirm } from './confirm.js';
 import { downloadBlob } from './export.js';
 import { setMarkdownContent } from './markdown.js';
@@ -177,6 +185,8 @@ document.getElementById('btn-settings').addEventListener('click', async () => {
     document.getElementById('setting-rate-limit').value = data.security.messageRateLimitPerMin ?? 30;
     document.getElementById('setting-max-log-age').value = data.security.maxLogAgeDays ?? 30;
 
+    refreshNotificationsSetting();
+
     $settingsDialog.showModal();
   } catch (err) {
     console.error('Failed to load settings:', err);
@@ -188,6 +198,49 @@ document.getElementById('btn-copy-settings-token').addEventListener('click', () 
   const btn = document.getElementById('btn-copy-settings-token');
   btn.textContent = 'Copied!';
   setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+});
+
+// ---------------------------------------------------------------------------
+// Desktop notifications toggle
+// ---------------------------------------------------------------------------
+
+const $settingNotifications = document.getElementById('setting-notifications');
+const $settingNotificationsHint = document.getElementById('setting-notifications-hint');
+
+function refreshNotificationsSetting() {
+  const supported = isNotificationsSupported();
+  const permission = getNotificationPermission();
+  const enabled = supported && permission === 'granted' && loadNotificationPref();
+
+  $settingNotifications.checked = enabled;
+  $settingNotifications.disabled = !supported || permission === 'denied';
+
+  if (!supported) {
+    $settingNotificationsHint.textContent = 'This browser does not support desktop notifications.';
+  } else if (permission === 'denied') {
+    $settingNotificationsHint.textContent = 'Blocked by the browser — unblock notifications for this site, then try again.';
+  } else if (permission === 'default') {
+    $settingNotificationsHint.textContent = enabled ? '' : 'Enabling will ask for permission.';
+  } else {
+    $settingNotificationsHint.textContent = enabled ? 'Enabled — you will be notified when background sessions finish.' : '';
+  }
+}
+
+$settingNotifications.addEventListener('change', async () => {
+  if ($settingNotifications.checked) {
+    const result = await requestNotificationPermission();
+    if (result !== 'granted') {
+      $settingNotifications.checked = false;
+      saveNotificationPref(false);
+      showToast(result === 'denied' ? 'Notifications blocked by browser' : 'Notifications not enabled');
+      refreshNotificationsSetting();
+      return;
+    }
+    saveNotificationPref(true);
+  } else {
+    saveNotificationPref(false);
+  }
+  refreshNotificationsSetting();
 });
 
 // ---------------------------------------------------------------------------
@@ -873,6 +926,7 @@ function handleServerMessage(msg) {
           // reconnect after this turn doesn't resurrect a stale dot.
           send({ type: 'mark_read', sessionId: s.id });
         }
+        maybeNotifyIdle(s, msg.stderr);
       }
       updateStatusUI();
       renderSidebar();
@@ -892,6 +946,7 @@ function handleServerMessage(msg) {
         } else {
           send({ type: 'mark_read', sessionId: s.id });
         }
+        maybeNotifyIdle(s, msg.message);
       } else {
         console.error('[server]', msg.message);
       }
@@ -1801,6 +1856,33 @@ function updateUnreadTitle() {
   const base = 'Sublight';
   const want = anyUnread ? `\u25CF ${base}` : base;
   if (document.title !== want) document.title = want;
+}
+
+// Fire a desktop notification when a background session finishes. "Background"
+// means the user is either looking at another session or has the tab hidden.
+function maybeNotifyIdle(session, errorText) {
+  const away = state.activeId !== session.id || document.visibilityState === 'hidden';
+  if (!away) return;
+  showSessionNotification({
+    sessionId: session.id,
+    sessionName: session.name || 'Session',
+    body: errorText ? `Error: ${truncate(errorText, 140)}` : lastAssistantSnippet(session),
+    onClick: () => switchSession(session.id),
+  });
+}
+
+function lastAssistantSnippet(session) {
+  for (let i = session.messages.length - 1; i >= 0; i--) {
+    const m = session.messages[i];
+    if (m.role === 'assistant' && typeof m.text === 'string' && m.text.trim()) {
+      return truncate(m.text.trim().replace(/\s+/g, ' '), 140);
+    }
+  }
+  return 'Ready';
+}
+
+function truncate(text, max) {
+  return text.length <= max ? text : text.slice(0, max - 1).trimEnd() + '\u2026';
 }
 
 function startRename(li, session) {
