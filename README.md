@@ -31,6 +31,22 @@ npm start
 
 Open `http://localhost:3700` in your browser. On first run, a setup screen will generate an access token and let you configure security defaults.
 
+### Desktop launcher (optional)
+
+```bash
+npm run install-sublight
+```
+
+Cross-platform installer:
+
+- **Windows** — generates a multi-resolution `.ico` from `assets/icon/*.png` and drops a `Sublight.lnk` on your Desktop pointing at `start-sublight.cmd`.
+- **Linux** — installs the icon into the hicolor theme (`~/.local/share/icons/`), writes `~/.local/share/applications/sublight.desktop` so Sublight shows up in your app menu, and copies the desktop entry to `~/Desktop/` as well.
+- **macOS** — builds a `Sublight.app` bundle on your Desktop, with an `.icns` produced from the same PNG set via the system `iconutil` tool. First launch may trigger a Gatekeeper warning — right-click > Open to allow.
+
+The installer only touches the desktop/launcher files; it does not install dependencies or modify settings. Rerun any time to refresh the icon or shortcut.
+
+If you only want the raw launcher with no icon/shortcut, `start-sublight.cmd` (Windows) and `start-sublight.sh` (Linux/macOS) live at the project root and can be invoked directly — both use their own location to find the project, so they're safe to symlink.
+
 ## Configuration
 
 Settings are managed through the in-app Settings dialog. You can also set environment variables in `.env`:

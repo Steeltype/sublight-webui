@@ -21,6 +21,14 @@ Sublight is a web UI that wraps the Claude CLI via persistent stdin/stdout strea
 - **lib/logMeta.js** — Pure NDJSON log parser. Kept separate so tests can exercise it without spinning up the server.
 - **artifact-mcp.js** — MCP server injected into Claude sessions via `--mcp-config`. Provides 9 tools (show_image, show_artifact, show_markdown, show_diff, show_progress, notify, open_url, pin_artifact, set_session_name). Communicates back to the server via HTTP POST.
 
+### Desktop install / launcher
+
+- **start-sublight.cmd** / **start-sublight.sh** — Static, position-independent launchers at the repo root. Both cd into their own directory (`%~dp0` on Windows, `$(dirname "$0")` on Unix), resolve the port from `settings.json`, open the browser after a 2s delay, then run `npm start` in the foreground so the startup banner is visible. Safe to invoke directly or symlink.
+- **install.ps1** — Windows installer. Packs the committed PNG icon set (`assets/icon/*.png`) into `assets/sublight.ico` and creates a `Sublight.lnk` on the user Desktop via `WScript.Shell` COM. Does not touch the launcher cmd.
+- **install.sh** — Linux/macOS installer. On Linux, installs PNGs into the hicolor theme and writes `sublight.desktop` to `~/.local/share/applications/` and `~/Desktop/`. On macOS, builds a `Sublight.app` bundle on the Desktop with a `.icns` produced from the PNG set via the system `iconutil`. Bundle executable shells out to `open -a Terminal start-sublight.sh` so the banner/token/URL stay visible.
+- **install.mjs** — Cross-platform dispatcher. Invoked via `npm run install-sublight`. Picks `install.ps1` on `win32` or `install.sh` on `linux`/`darwin`, errors cleanly elsewhere. Forwards stdio so the installer's output reaches the user directly.
+- **assets/icon/\*.png** — Committed icon asset set at 16/32/48/64/128/256/512/1024px. Source of truth for all platforms' icon artifacts. **scripts/render-pngs.ps1** regenerates these from `System.Drawing` primitives — run it only when the icon design changes.
+
 ### Frontend
 
 - **public/app.js** — Entry point. Imports the modules below, owns session switching, chat rendering, slash commands, WS message dispatch.
