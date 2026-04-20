@@ -5,6 +5,7 @@
 // pass a message handler so this module stays agnostic of the app-level
 // switch statement.
 
+import { clearAuthToken } from './auth.js';
 import { state } from './state.js';
 
 const MAX_RECONNECT_DELAY = 30000;
@@ -44,7 +45,7 @@ export function connect({ onMessage, onAuthFailed }) {
     state.ws = null;
     if (evt.code === 1006 && state.authRequired) {
       state.authToken = null;
-      sessionStorage.removeItem('sublight_token');
+      clearAuthToken();
       onAuthFailed();
       return;
     }

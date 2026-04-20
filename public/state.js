@@ -4,6 +4,8 @@
 // from here. This is the canonical location — do not redeclare state in
 // app.js or any extracted module.
 
+import { loadAuthToken } from './auth.js';
+
 export const state = {
   sessions: new Map(),
   activeId: null,
@@ -11,7 +13,7 @@ export const state = {
   defaultCwd: '',
   defaultPermissionMode: 'default',
   reconnectDelay: 1000,
-  authToken: sessionStorage.getItem('sublight_token') || null,
+  authToken: loadAuthToken(),
   authRequired: false,
   notesVisible: false,
   artifactsVisible: false,

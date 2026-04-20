@@ -116,6 +116,16 @@ html, body {
   min-height: 1.4em;
 }
 
+.auth-remember-label {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+  user-select: none;
+  cursor: pointer;
+}
+
 /* ─── Setup screen ───────────────────────────────────────────── */
 
 #setup-screen {

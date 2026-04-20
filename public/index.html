@@ -40,6 +40,10 @@
           <button type="button" id="btn-setup-token-regen" title="Generate a new random token">Regenerate</button>
         </div>
         <p class="setup-hint" id="setup-token-console-hint" hidden>Copy the token printed in the server console to connect.</p>
+        <label class="setting-label">
+          <input type="checkbox" id="setup-remember" checked>
+          Remember on this device
+        </label>
       </section>
 
       <section class="setup-section">
@@ -64,6 +68,10 @@
       <h1>Sublight</h1>
       <p>This instance requires a token to connect.</p>
       <input type="password" id="auth-token" placeholder="Enter token" autocomplete="off">
+      <label class="setting-label auth-remember-label">
+        <input type="checkbox" id="auth-remember" checked>
+        Remember on this device
+      </label>
       <button type="submit">Connect</button>
       <div id="auth-error"></div>
     </form>

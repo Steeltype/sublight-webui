@@ -4,7 +4,7 @@
 
 import { handleOpenUrl, handlePin, handleProgress, renderArtifacts } from './artifacts.js';
 import { consumeAttachments } from './attachments.js';
-import { authFetch } from './auth.js';
+import { authFetch, isTokenRemembered, saveAuthToken } from './auth.js';
 import { confirm } from './confirm.js';
 import { downloadBlob } from './export.js';
 import { setMarkdownContent } from './markdown.js';
@@ -57,8 +57,9 @@ $authForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const token = $authToken.value.trim();
   if (!token) return;
+  const remember = document.getElementById('auth-remember').checked;
   state.authToken = token;
-  sessionStorage.setItem('sublight_token', token);
+  saveAuthToken(token, remember);
   $authError.textContent = '';
   hideAuthScreen();
   startWebSocket();
@@ -138,9 +139,10 @@ document.getElementById('setup-form').addEventListener('submit', async (e) => {
     });
     const data = await res.json();
     if (data.ok) {
+      const remember = document.getElementById('setup-remember').checked;
       state.authToken = data.token;
       state.authRequired = true;
-      sessionStorage.setItem('sublight_token', data.token);
+      saveAuthToken(data.token, remember);
       $setupScreen.classList.add('hidden');
       $appShell.classList.remove('hidden');
       startWebSocket();
@@ -267,7 +269,10 @@ document.getElementById('btn-regen-token').addEventListener('click', async () =>
     }
     document.getElementById('settings-token').textContent = data.token;
     state.authToken = data.token;
-    sessionStorage.setItem('sublight_token', data.token);
+    // Preserve the user's existing choice of persistence — if they opted to
+    // remember, the new token replaces the old in localStorage; otherwise it
+    // stays session-only.
+    saveAuthToken(data.token, isTokenRemembered());
     showToast('Token regenerated');
   } catch (err) {
     console.error('Failed to regenerate token:', err);
