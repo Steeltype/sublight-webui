@@ -643,6 +643,11 @@ async function rehydrateSessionFromLog(sessionId) {
     let entry;
     try { entry = JSON.parse(line); } catch { continue; }
 
+    if (entry.type === 'session_imported') {
+      session.imported = true;
+      continue;
+    }
+
     if (entry.type === 'user_message') {
       flushAssistant();
       session.messages.push({ role: 'user', text: entry.text, attachments: null, parentToolUseId: null });
@@ -923,6 +928,7 @@ function handleServerMessage(msg) {
         messages: [],
         status: 'idle',
         hasUnread: false,
+        imported: false,
         streamingEl: null,
         streamingText: '',
         pendingToolCards: new Map(),
@@ -955,6 +961,9 @@ function handleServerMessage(msg) {
         messages: [],
         status: 'idle',
         hasUnread: false,
+        // imported sessions come from the Claude CLI transcript store, so there's
+        // no Sublight NDJSON to replay — only the new notice is rendered.
+        imported: !!msg.imported,
         streamingEl: null,
         streamingText: '',
         pendingToolCards: new Map(),
@@ -968,12 +977,14 @@ function handleServerMessage(msg) {
       state.sessions.set(msg.sessionId, session);
       switchSession(msg.sessionId);
       renderSidebar();
-      // Pull the NDJSON log and replay it into the chat/artifact state. This
-      // reuses the already-authenticated logs endpoint — no new protocol.
-      rehydrateSessionFromLog(msg.sessionId).catch((err) => {
-        console.error('Failed to rehydrate session', err);
-        appendError(session, `Failed to rehydrate chat history: ${err.message}`);
-      });
+      if (!session.imported) {
+        // Pull the NDJSON log and replay it into the chat/artifact state. This
+        // reuses the already-authenticated logs endpoint — no new protocol.
+        rehydrateSessionFromLog(msg.sessionId).catch((err) => {
+          console.error('Failed to rehydrate session', err);
+          appendError(session, `Failed to rehydrate chat history: ${err.message}`);
+        });
+      }
       break;
     }
 
@@ -990,6 +1001,9 @@ function handleServerMessage(msg) {
           messages: [],
           status: s.status || 'idle',
           hasUnread: !!s.unread,
+          // rehydrateSessionFromLog flips this to true when it sees the
+          // session_imported marker at the head of the log.
+          imported: false,
           streamingEl: null,
           streamingText: '',
           pendingToolCards: new Map(),
@@ -1631,6 +1645,12 @@ function renderChat() {
   renderQueue(session);
 
   $messages.replaceChildren();
+  if (session.imported) {
+    const notice = document.createElement('div');
+    notice.className = 'imported-notice';
+    notice.textContent = 'Imported from Claude Code. Prior conversation is loaded in Claude\u2019s memory but not shown here — send a message to continue.';
+    $messages.appendChild(notice);
+  }
   // Rebuild toolContainers from scratch — we're about to re-append every
   // message, and nested children resolve parents via this map.
   session.toolContainers = new Map();

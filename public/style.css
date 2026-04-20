@@ -42,6 +42,21 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+/* Imported-from-Claude-Code notice — rendered as the first item in the
+   messages list for sessions that were resumed from Claude's CLI storage.
+   Sits inline with the chat so it scrolls naturally and never hides real
+   output. */
+.imported-notice {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 10px 14px;
+  margin: 8px 0 16px;
+  line-height: 1.5;
+}
+
 /* Connection banner — sits above everything, shows when the WS is
    disconnected and the client is retrying. Amber so it reads as an alert
    without implying a fatal error. */
