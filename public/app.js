@@ -846,7 +846,14 @@ async function rehydrateSessionFromLog(sessionId) {
             id: block.id,
             parentToolUseId: parentId,
           });
-        } else if (block.type === 'tool_result') {
+        }
+      }
+    } else if (ev.type === 'user') {
+      // tool_result blocks come in as type:"user" events, not assistant.
+      const content = ev.message?.content;
+      if (!Array.isArray(content)) continue;
+      for (const block of content) {
+        if (block.type === 'tool_result') {
           const existing = session.messages.find((m) => m.id === block.tool_use_id);
           if (existing) existing.result = extractToolResultText(block);
         }
@@ -1440,7 +1447,18 @@ function handleClaudeEvent(session, event) {
             session.messages.push({ role: 'tool', name: block.name, input: block.input, result: null, id: block.id, parentToolUseId: session.currentParentToolUseId || null });
           }
         }
+      }
+      break;
+    }
 
+    case 'user': {
+      // Claude emits tool_result blocks wrapped in a type:"user" event (they
+      // represent the tool output fed back into the conversation). These are
+      // NOT user-typed chat messages — we never push them into session.messages
+      // as role:"user"; we just merge the result into the matching tool card.
+      const content = event.message?.content;
+      if (!Array.isArray(content)) break;
+      for (const block of content) {
         if (block.type === 'tool_result') {
           session.outstandingTools.delete(block.tool_use_id);
           if (isActive) {
