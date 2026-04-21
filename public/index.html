@@ -108,6 +108,7 @@
         <div id="chat-header">
           <span id="chat-title"></span>
           <button type="button" id="btn-copy-cwd" title="Copy working directory path" aria-label="Copy working directory path">&#128203;</button>
+          <span id="chat-model" class="hidden" title="Model used by this session"></span>
           <span id="chat-status"></span>
           <span id="chat-runtime" class="hidden" title=""></span>
           <div id="chat-actions">
@@ -185,6 +186,18 @@
         <button type="button" class="preset-chip preset-chip-clear" data-preset="clear" title="Clear the list">Clear</button>
       </div>
       <input type="text" id="session-allowed-tools" placeholder='e.g. Read Glob Grep "Bash(git log *)"' autocomplete="off" spellcheck="false">
+      <label for="session-model" class="session-allowed-label">
+        Model <span class="session-allowed-hint">(blank uses the Claude CLI default)</span>
+      </label>
+      <input type="text" id="session-model" list="session-model-options" placeholder="e.g. sonnet, opus, haiku, or full id" autocomplete="off" spellcheck="false">
+      <datalist id="session-model-options">
+        <option value="sonnet"></option>
+        <option value="opus"></option>
+        <option value="haiku"></option>
+        <option value="claude-opus-4-7"></option>
+        <option value="claude-sonnet-4-6"></option>
+        <option value="claude-haiku-4-5-20251001"></option>
+      </datalist>
       <div class="dialog-actions">
         <button type="button" id="dialog-cancel">Cancel</button>
         <button type="submit" id="dialog-create">Create</button>
@@ -317,6 +330,11 @@
           Desktop notifications when a background session finishes
         </label>
         <p class="setup-hint" id="setting-notifications-hint"></p>
+        <label class="setting-label">
+          <input type="checkbox" id="setting-completion-sound">
+          Play a sound when a background session finishes
+        </label>
+        <button type="button" id="btn-preview-sound" class="inline-btn">Preview sound</button>
       </section>
 
       <section class="settings-section">

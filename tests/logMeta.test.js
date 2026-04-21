@@ -122,3 +122,25 @@ test('entryCount excludes blank lines', () => {
   const meta = parseLogMeta(content);
   assert.equal(meta.entryCount, 2);
 });
+
+test('extracts model from session_created', () => {
+  const content = ndjson([
+    { ts: 't1', type: 'session_created', cwd: '/p', permissionMode: 'bypass', model: 'sonnet' },
+  ]);
+  assert.equal(parseLogMeta(content).model, 'sonnet');
+});
+
+test('model is null when not recorded', () => {
+  const content = ndjson([
+    { ts: 't1', type: 'session_created', cwd: '/p', permissionMode: 'bypass' },
+  ]);
+  assert.equal(parseLogMeta(content).model, null);
+});
+
+test('model persists through session_resumed entries', () => {
+  const content = ndjson([
+    { ts: 't1', type: 'session_created', cwd: '/p', permissionMode: 'bypass', model: 'opus' },
+    { ts: 't2', type: 'session_resumed', cwd: '/p', permissionMode: 'bypass', model: 'opus' },
+  ]);
+  assert.equal(parseLogMeta(content).model, 'opus');
+});

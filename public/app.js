@@ -8,8 +8,11 @@ import { authFetch, isTokenRemembered, saveAuthToken } from './auth.js';
 import {
   getNotificationPermission,
   isNotificationsSupported,
+  loadCompletionSoundPref,
   loadNotificationPref,
+  playCompletionSound,
   requestNotificationPermission,
+  saveCompletionSoundPref,
   saveNotificationPref,
   showSessionNotification,
 } from './notifications.js';
@@ -29,6 +32,7 @@ const $sidebar       = document.getElementById('session-list');
 const $emptyState    = document.getElementById('empty-state');
 const $chatArea      = document.getElementById('chat-area');
 const $chatTitle     = document.getElementById('chat-title');
+const $chatModel     = document.getElementById('chat-model');
 const $chatStatus    = document.getElementById('chat-status');
 const $btnCopyCwd    = document.getElementById('btn-copy-cwd');
 const $chatRuntime   = document.getElementById('chat-runtime');
@@ -215,6 +219,9 @@ function refreshNotificationsSetting() {
   $settingNotifications.checked = enabled;
   $settingNotifications.disabled = !supported || permission === 'denied';
 
+  const $soundCheckbox = document.getElementById('setting-completion-sound');
+  if ($soundCheckbox) $soundCheckbox.checked = loadCompletionSoundPref();
+
   if (!supported) {
     $settingNotificationsHint.textContent = 'This browser does not support desktop notifications.';
   } else if (permission === 'denied') {
@@ -241,6 +248,19 @@ $settingNotifications.addEventListener('change', async () => {
     saveNotificationPref(false);
   }
   refreshNotificationsSetting();
+});
+
+const $settingCompletionSound = document.getElementById('setting-completion-sound');
+$settingCompletionSound.addEventListener('change', () => {
+  saveCompletionSoundPref($settingCompletionSound.checked);
+});
+document.getElementById('btn-preview-sound').addEventListener('click', () => {
+  // Temporarily flip the pref on so preview plays regardless of the checkbox
+  // state — lets the user audition before committing.
+  const wasOn = loadCompletionSoundPref();
+  if (!wasOn) saveCompletionSoundPref(true);
+  playCompletionSound();
+  if (!wasOn) saveCompletionSoundPref(false);
 });
 
 // ---------------------------------------------------------------------------
@@ -714,7 +734,7 @@ async function rehydrateSessionFromLog(sessionId) {
       } else if (ev.subtype === 'success' && ev.result) {
         session.messages.push({ role: 'assistant', text: ev.result, parentToolUseId: parentId });
       }
-      if (ev.total_cost_usd != null) session.costUsd = ev.total_cost_usd;
+      accumulateTurnStats(session, ev);
     }
   }
 
@@ -925,6 +945,7 @@ function handleServerMessage(msg) {
         id: msg.sessionId,
         cwd: msg.cwd,
         name: shortCwd(msg.cwd),
+        model: msg.model || null,
         messages: [],
         status: 'idle',
         hasUnread: false,
@@ -937,7 +958,7 @@ function handleServerMessage(msg) {
         // container instead of the top-level #messages. Supports arbitrary
         // nesting depth (a Task subagent can spawn another Task).
         toolContainers: new Map(),
-        costUsd: null,
+        ...createUsageStats(),
         queue: [],
         // Status-strip tracking: turnStartedAt is when stream_start arrived,
         // lastStreamAt is when the most recent text chunk landed, and
@@ -958,6 +979,7 @@ function handleServerMessage(msg) {
         id: msg.sessionId,
         cwd: msg.cwd,
         name: msg.name || shortCwd(msg.cwd),
+        model: msg.model || null,
         messages: [],
         status: 'idle',
         hasUnread: false,
@@ -968,7 +990,7 @@ function handleServerMessage(msg) {
         streamingText: '',
         pendingToolCards: new Map(),
         toolContainers: new Map(),
-        costUsd: null,
+        ...createUsageStats(),
         queue: [],
         turnStartedAt: 0,
         lastStreamAt: 0,
@@ -998,6 +1020,7 @@ function handleServerMessage(msg) {
           id: s.sessionId,
           cwd: s.cwd,
           name: s.name || shortCwd(s.cwd),
+          model: s.model || null,
           messages: [],
           status: s.status || 'idle',
           hasUnread: !!s.unread,
@@ -1008,7 +1031,7 @@ function handleServerMessage(msg) {
           streamingText: '',
           pendingToolCards: new Map(),
           toolContainers: new Map(),
-          costUsd: null,
+          ...createUsageStats(),
           queue: [],
           turnStartedAt: 0,
           lastStreamAt: 0,
@@ -1125,6 +1148,22 @@ function handleServerMessage(msg) {
 
     case 'session_restarted': {
       showToast('Claude process restarted — MCPs and settings reloaded');
+      break;
+    }
+
+    case 'session_renamed': {
+      // Server-confirmed rename. Adopt whatever the server actually stored —
+      // it may have trimmed or length-capped the client-provided name.
+      const s = state.sessions.get(msg.sessionId);
+      if (s && msg.name) {
+        s.name = msg.name;
+        if (state.activeId === s.id) {
+          $chatTitle.textContent = s.name;
+          $chatTitle.setAttribute('aria-label',
+            s.cwd ? `Session ${s.name} — working directory ${s.cwd}` : `Session ${s.name}`);
+        }
+        renderSidebar();
+      }
       break;
     }
 
@@ -1310,10 +1349,8 @@ function handleClaudeEvent(session, event) {
       if (event.subtype?.startsWith('error')) {
         appendError(session, event.result || `Error: ${event.subtype}`);
       }
-      if (event.total_cost_usd != null) {
-        session.costUsd = event.total_cost_usd;
-        if (isActive) updateStatusUI();
-      }
+      accumulateTurnStats(session, event);
+      if (isActive) updateStatusUI();
       break;
     }
   }
@@ -1642,6 +1679,13 @@ function renderChat() {
   $chatTitle.setAttribute('aria-label',
     session.cwd ? `Session ${session.name || ''} — working directory ${session.cwd}` : `Session ${session.name || ''}`);
   $btnCopyCwd.title = session.cwd ? `Copy: ${session.cwd}` : 'No working directory';
+  if (session.model) {
+    $chatModel.textContent = session.model;
+    $chatModel.classList.remove('hidden');
+  } else {
+    $chatModel.textContent = '';
+    $chatModel.classList.add('hidden');
+  }
   updateStatusUI();
   updateRuntimeStrip(session);
   renderQueue(session);
@@ -1814,6 +1858,7 @@ function updateStatusUI() {
 
   if (busy) {
     $chatStatus.textContent = '';
+    $chatStatus.removeAttribute('title');
     const indicator = document.createElement('span');
     indicator.className = 'working-indicator';
     indicator.textContent = 'Working';
@@ -1822,11 +1867,78 @@ function updateStatusUI() {
     for (let i = 0; i < 3; i++) { const d = document.createElement('span'); d.textContent = '.'; dots.appendChild(d); }
     indicator.appendChild(dots);
     $chatStatus.appendChild(indicator);
-  } else if (session.costUsd != null) {
-    $chatStatus.textContent = `$${session.costUsd.toFixed(4)}`;
+  } else if (session.numTurns > 0) {
+    // Show "$total · N tok" with the full breakdown on hover.
+    const t = session.tokenTotals;
+    $chatStatus.textContent = `$${session.costTotal.toFixed(4)} · ${formatTokens(totalInputTokens(t) + t.output)} tok`;
+    $chatStatus.title = usageTooltip(session);
   } else {
     $chatStatus.textContent = 'idle';
+    $chatStatus.removeAttribute('title');
   }
+}
+
+// ---------------------------------------------------------------------------
+// Usage statistics — cumulative cost + token counts per session
+// ---------------------------------------------------------------------------
+
+/** Initial stats shape — spread into every new session object. */
+function createUsageStats() {
+  return {
+    costLastTurn: null,
+    costTotal: 0,
+    tokenTotals: { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 },
+    numTurns: 0,
+  };
+}
+
+/** Accumulate cost and token counts from a `result` event's usage block. */
+function accumulateTurnStats(session, event) {
+  if (!session) return;
+  if (event.total_cost_usd != null) {
+    session.costLastTurn = event.total_cost_usd;
+    session.costTotal = (session.costTotal || 0) + event.total_cost_usd;
+  }
+  const u = event.usage;
+  if (u) {
+    const t = session.tokenTotals;
+    if (typeof u.input_tokens === 'number') t.input += u.input_tokens;
+    if (typeof u.output_tokens === 'number') t.output += u.output_tokens;
+    if (typeof u.cache_read_input_tokens === 'number') t.cacheRead += u.cache_read_input_tokens;
+    if (typeof u.cache_creation_input_tokens === 'number') t.cacheCreate += u.cache_creation_input_tokens;
+  }
+  session.numTurns = (session.numTurns || 0) + 1;
+}
+
+/** Compact integer formatter for token counts: 9 → "9", 1234 → "1.2K", 1_500_000 → "1.5M". */
+function formatTokens(n) {
+  if (!n) return '0';
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+  return (n / 1_000_000).toFixed(2).replace(/\.?0+$/, '') + 'M';
+}
+
+/** Total input tokens — fresh inputs + cache creation + cache reads. */
+function totalInputTokens(t) {
+  return (t?.input || 0) + (t?.cacheRead || 0) + (t?.cacheCreate || 0);
+}
+
+/** Multi-line tooltip describing the full cost/token breakdown. */
+function usageTooltip(session) {
+  const t = session.tokenTotals || { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
+  const lines = [
+    `Total cost: $${(session.costTotal || 0).toFixed(4)}`,
+    `Turns: ${session.numTurns || 0}`,
+    '',
+    `Input tokens:  ${formatTokens(t.input)}`,
+    `Cache create:  ${formatTokens(t.cacheCreate)}`,
+    `Cache read:    ${formatTokens(t.cacheRead)}`,
+    `Output tokens: ${formatTokens(t.output)}`,
+  ];
+  if (session.costLastTurn != null) {
+    lines.push('', `Last turn: $${session.costLastTurn.toFixed(4)}`);
+  }
+  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -1871,14 +1983,23 @@ function renderStatusStrip(session) {
 
   if (!busy) {
     dot.classList.add('idle');
-    if (session.costUsd != null) {
-      label.textContent = 'Ready';
+    label.textContent = 'Ready';
+    if (session.numTurns > 0) {
+      const t = session.tokenTotals;
       const meta = document.createElement('span');
       meta.className = 'status-meta';
-      meta.textContent = `$${session.costUsd.toFixed(4)} last turn`;
+      meta.title = usageTooltip(session);
+      meta.textContent =
+        `$${session.costTotal.toFixed(4)} · ` +
+        `${formatTokens(totalInputTokens(t))} in · ` +
+        `${formatTokens(t.output)} out`;
       $statusStrip.appendChild(meta);
-    } else {
-      label.textContent = 'Ready';
+      if (session.costLastTurn != null) {
+        const last = document.createElement('span');
+        last.className = 'status-meta status-meta-dim';
+        last.textContent = `last $${session.costLastTurn.toFixed(4)}`;
+        $statusStrip.appendChild(last);
+      }
     }
     if (session.queue?.length) {
       const meta = document.createElement('span');
@@ -2038,6 +2159,7 @@ function maybeNotifyIdle(session, errorText) {
     body: errorText ? `Error: ${truncate(errorText, 140)}` : lastAssistantSnippet(session),
     onClick: () => switchSession(session.id),
   });
+  playCompletionSound();
 }
 
 function lastAssistantSnippet(session) {
@@ -2071,7 +2193,12 @@ function startRename(li, session) {
 
   function finishRename() {
     const newName = input.value.trim();
-    if (newName) session.name = newName;
+    if (newName && newName !== session.name) {
+      // Optimistic local update — the server echoes a `session_renamed`
+      // that confirms (or overrides, if it trimmed/rejected) this name.
+      session.name = newName;
+      send({ type: 'rename_session', sessionId: session.id, name: newName });
+    }
     input.remove();
     nameSpan.classList.remove('hidden');
     closeBtn.classList.remove('hidden');
@@ -2283,6 +2410,7 @@ const $cwdSuggest   = document.getElementById('cwd-suggestions');
 const RECENT_KEY    = 'sublight_recent_dirs';
 const MAX_RECENTS   = 10;
 const ALLOWED_KEY   = 'sublight_last_allowed_tools';
+const MODEL_KEY     = 'sublight_last_model';
 
 // Preset lists for the "Allowed tools" chips. Progressive: each step adds
 // capability on top of the previous one so users can pick the smallest
@@ -2429,6 +2557,8 @@ function openNewSessionDialog() {
   // so they don't have to retype their preferred allowlist for every session.
   const allowedInput = document.getElementById('session-allowed-tools');
   allowedInput.value = localStorage.getItem(ALLOWED_KEY) || '';
+  const modelInput = document.getElementById('session-model');
+  modelInput.value = localStorage.getItem(MODEL_KEY) || '';
   updateAllowedToolsEnabled();
   $cwdSuggest.classList.add('hidden');
   $dialog.showModal();
@@ -2483,11 +2613,15 @@ document.getElementById('new-session-form').addEventListener('submit', (e) => {
   // when the user is actually using the list (non-bypass) so bypass-mode
   // submits don't wipe out a previously saved list.
   if (!bypass && allowedRaw) localStorage.setItem(ALLOWED_KEY, allowedRaw);
+  const modelRaw = document.getElementById('session-model').value.trim();
+  if (modelRaw) localStorage.setItem(MODEL_KEY, modelRaw);
+  else localStorage.removeItem(MODEL_KEY);
   send({
     type: 'new_session',
     cwd,
     permissionMode: bypass ? 'bypass' : 'default',
     allowedTools: allowedTools && allowedTools.length ? allowedTools : undefined,
+    model: modelRaw || undefined,
   });
   $dialog.close();
 });

@@ -324,6 +324,27 @@ html, body {
   border-color: var(--accent);
 }
 
+/* Small inline button that sits on its own row inside a settings section —
+   mirrors the .setting-inline > button styling so they visually agree. */
+.inline-btn {
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 5px 12px;
+  margin-top: 4px;
+  align-self: flex-start;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.inline-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+
 .setting-value {
   color: var(--text-dim);
   font-size: 13px;
@@ -1137,6 +1158,17 @@ dialog::backdrop {
   border-color: var(--text-dim);
 }
 
+#chat-model {
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--bg-chat);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 2px 7px;
+  font-family: var(--mono, monospace);
+  white-space: nowrap;
+}
+
 #chat-status {
   font-size: 12px;
   color: var(--text-dim);
@@ -1664,6 +1696,11 @@ dialog::backdrop {
 
 .status-meta {
   color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.status-meta-dim {
+  opacity: 0.6;
 }
 
 .status-meta + .status-meta::before {
