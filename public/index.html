@@ -120,6 +120,13 @@
             <button id="btn-notes" title="Toggle notes panel">Notes</button>
           </div>
         </div>
+        <div id="find-bar" class="hidden" role="search">
+          <input type="search" id="find-input" placeholder="Find in transcript…" autocomplete="off" spellcheck="false">
+          <span id="find-count">0 / 0</span>
+          <button type="button" id="find-prev" title="Previous match (Shift+Enter)" aria-label="Previous match">↑</button>
+          <button type="button" id="find-next" title="Next match (Enter)" aria-label="Next match">↓</button>
+          <button type="button" id="find-close" title="Close find bar (Esc)" aria-label="Close find">×</button>
+        </div>
         <div id="chat-body">
           <div id="messages"></div>
           <div id="artifacts-panel" class="hidden">
@@ -143,7 +150,8 @@
           <ul id="slash-suggest" class="hidden"></ul>
           <div id="input-row">
             <button type="button" id="btn-attach" title="Attach file or paste screenshot" aria-label="Attach file or paste screenshot">+</button>
-            <textarea id="prompt-input" placeholder="Write your message... (Ctrl+Enter to send, paste/drop images)" rows="3"></textarea>
+            <button type="button" id="btn-prompts" title="Prompt library — save and reuse prompts (;label to invoke)" aria-label="Prompt library">&#128213;</button>
+            <textarea id="prompt-input" placeholder="Write your message... (Ctrl+Enter to send, paste/drop images; ;label for saved prompts)" rows="3"></textarea>
             <div id="input-actions">
               <button type="submit" id="btn-send" title="Send (Ctrl+Enter)">Send</button>
               <button type="button" id="btn-abort" class="hidden" title="Stop">Stop</button>
@@ -231,12 +239,14 @@
       </div>
       <div class="logs-toolbar">
         <input type="search" id="logs-filter" placeholder="Filter by name, cwd, date, or id..." autocomplete="off">
+        <input type="search" id="logs-content-search" placeholder="Search inside logs…" autocomplete="off">
         <label class="logs-toolbar-toggle">
           <input type="checkbox" id="logs-show-stubs"> Show stubs
         </label>
         <button type="button" id="btn-open-claude-import">Import from Claude Code…</button>
       </div>
       <div id="logs-list"></div>
+      <div id="logs-content-results" class="hidden"></div>
       <div id="logs-viewer" class="hidden">
         <div id="logs-viewer-header">
           <button type="button" id="logs-viewer-back">&larr; Back</button>
@@ -286,6 +296,37 @@
       <div id="audit-list"></div>
       <div class="dialog-actions">
         <button type="button" id="audit-close">Close</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- ─── Prompt library ─────────────────────────────────────────── -->
+  <dialog id="prompts-dialog">
+    <div id="prompts-container">
+      <div id="prompts-header">
+        <h2>Prompt Library</h2>
+        <span id="prompts-count" class="setting-value"></span>
+      </div>
+      <p class="logs-notice">Save reusable prompts and recall them in the composer with <code>;label</code>.</p>
+      <div class="logs-toolbar">
+        <input type="search" id="prompts-filter" placeholder="Filter by label…" autocomplete="off">
+        <button type="button" id="btn-prompt-new">New prompt</button>
+      </div>
+      <div id="prompts-list"></div>
+      <div id="prompts-edit" class="hidden">
+        <label for="prompt-label">Label <span class="session-allowed-hint">(used to invoke via <code>;label</code>)</span></label>
+        <input type="text" id="prompt-label" maxlength="120" autocomplete="off">
+        <label for="prompt-body">Body</label>
+        <textarea id="prompt-body" rows="10" spellcheck="false"></textarea>
+        <div class="dialog-actions">
+          <button type="button" id="prompt-delete" class="danger-btn">Delete</button>
+          <span style="flex:1"></span>
+          <button type="button" id="prompt-cancel">Cancel</button>
+          <button type="button" id="prompt-save">Save</button>
+        </div>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" id="prompts-close">Close</button>
       </div>
     </div>
   </dialog>

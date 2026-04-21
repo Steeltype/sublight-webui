@@ -10,13 +10,13 @@ Sublight is a web UI that wraps the Claude CLI via persistent stdin/stdout strea
 
 - **server.js** (~100 lines) — Orchestration only: express + helmet, static mount, WebSocket server with auth-on-upgrade, interval/signal wiring, startup banner.
 - **lib/settings.js** — `DEFAULT_SETTINGS`, `saveSettings`, and the live `settings.current` holder. Also loads `.env` and exports `PORT`/`HOST`.
-- **lib/paths.js** — `REPO_ROOT`, `LOG_DIR`, `SETTINGS_PATH`, `AUDIT_LOG_PATH`, `ARTIFACT_MCP_PATH`.
+- **lib/paths.js** — `REPO_ROOT`, `LOG_DIR`, `SETTINGS_PATH`, `AUDIT_LOG_PATH`, `ARTIFACT_MCP_PATH`, `PROMPTS_PATH` (`logs/prompts.json`).
 - **lib/auth.js** — `timingSafeCompare`, `isLoopback`, `httpAuth`, `audit`, `getAuthToken()`. The token is resolved live on every request (env var wins over `settings.current.token`), so first-run setup and regeneration take effect without restart.
 - **lib/sessionState.js** — The mutable process state: `sessions` Map, `sessionLogPaths`, `connectionSessions`, `connectionMessageTimestamps`, `pendingUrlRequests`. Plus `sendJSON`, `sendToSession`, `getConnectionSessions`, `checkRateLimit`.
 - **lib/sessionLog.js** — Per-session NDJSON log I/O (`initSessionLog`, `logToSession`, `extractLogMeta`).
 - **lib/claudeProcess.js** — `validateCwd`, `isPathInSessionScope`, `writeMcpConfig`, `killSession`, `ensureProcess`, `sendMessage`. Owns the child process lifecycle (spawn, stdin write, stdout parse, error/close handling).
 - **lib/wsHandler.js** — `onWsConnection(ws)` — the big switch that routes incoming WS messages (new_session, message, resume_session, etc.) to the right state/process logic.
-- **lib/routes.js** — `registerRoutes(app, { wss, shutdown })` wires every HTTP endpoint (setup, settings, audit, logs, notes, local-file, artifact).
+- **lib/routes.js** — `registerRoutes(app, { wss, shutdown })` wires every HTTP endpoint (setup, settings, audit, logs, logs/search, notes, prompts, local-file, artifact).
 - **lib/lifecycle.js** — `startIdleSweeper(wss)` (idle-session sweep + old-log rotation) and `createShutdown(httpServer)` (SIGTERM → SIGKILL escalation → hard exit).
 - **lib/logMeta.js** — Pure NDJSON log parser. Kept separate so tests can exercise it without spinning up the server.
 - **artifact-mcp.js** — MCP server injected into Claude sessions via `--mcp-config`. Provides 9 tools (show_image, show_artifact, show_markdown, show_diff, show_progress, notify, open_url, pin_artifact, set_session_name). Communicates back to the server via HTTP POST.
@@ -38,12 +38,27 @@ Sublight is a web UI that wraps the Claude CLI via persistent stdin/stdout strea
 - **public/artifacts.js** — Artifact panel rendering, progress bars, open_url confirmation, pin, per-card export.
 - **public/attachments.js** — File upload/paste/drag buffer. Exposes `consumeAttachments()` for the composer.
 - **public/notes.js** — Per-session notes panel. Server-persisted via `/api/notes/:id` with localStorage as offline fallback.
+- **public/notifications.js** — Desktop notification pref + completion-sound pref. `playCompletionSound()` synthesizes a two-note tone via WebAudio (no asset file).
 - **public/export.js** — Save-as-markdown and full-bundle-zip handlers. Exports `downloadBlob` and `safeFilename` for reuse.
 - **public/markdown.js** — `setMarkdownContent(el, text)` — marked + DOMPurify.
 - **public/confirm.js** — Modal `confirm()` dialog.
 - **public/toast.js** — Transient toast notifications.
 - **public/style.css** — Dark theme CSS. No build step, no preprocessor.
 - **public/index.html** — Static HTML shell. CDN deps have SRI integrity hashes.
+
+### User-invocable features on the composer
+
+- `/command` — slash commands from Claude's own runtime (list arrives via the `system/init` event's `slash_commands`).
+- `;label` — saved prompt from the prompt library (`logs/prompts.json`, CRUD via `GET/PUT /api/prompts`). The suggest menu reuses the slash-suggest DOM with a `prompt-suggest-mode` class. Tab/Enter expands the selected prompt into the composer.
+- `Ctrl+Shift+F` — find-in-transcript: walks #messages' text nodes, wraps matches in `<mark class="find-hit">`, auto-opens `<details>` ancestors, steps through with prev/next.
+- The logs dialog has a "Search inside logs" input that hits `GET /api/logs/search?q=...` and renders matching snippets; clicking a result opens the full log viewer.
+
+### Per-session controls
+
+- **Model** — optional `--model <id>` captured on `new_session` (persisted in the `session_created` NDJSON entry and recovered on resume). Shown as a read-only chip in the chat header.
+- **Rename** — double-click the sidebar entry. Sends `rename_session` over the WS, which persists a synthetic `set_session_name` artifact so `parseLogMeta` picks it up after reload.
+- **Cost / tokens** — every `result` event's `total_cost_usd` and `usage` feed `costTotal` + `tokenTotals` on the session object; rendered in the status strip and chat header with a breakdown tooltip.
+- **Edit-as-new-turn** — hover a user message to reveal an Edit button. The textarea opens inline; Save sends the edited text as a fresh turn (not a rewind — Claude's prior context is unchanged). True fork-at-point would need transcript surgery we don't do.
 
 ## Key Design Decisions
 

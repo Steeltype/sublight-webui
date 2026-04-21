@@ -427,6 +427,129 @@ document.getElementById('btn-logs').addEventListener('click', async () => {
 
 document.getElementById('logs-filter').addEventListener('input', () => renderLogsList());
 
+// Content search over all log files. Hits the server only when the input has
+// a non-trivial query (2+ chars) so typing doesn't fire a request per keystroke.
+const $logsContentSearch = document.getElementById('logs-content-search');
+const $logsContentResults = document.getElementById('logs-content-results');
+let logsContentDebounce = null;
+
+$logsContentSearch.addEventListener('input', () => {
+  clearTimeout(logsContentDebounce);
+  logsContentDebounce = setTimeout(runLogsContentSearch, 250);
+});
+
+async function runLogsContentSearch() {
+  const q = $logsContentSearch.value.trim();
+  if (q.length < 2) {
+    $logsContentResults.classList.add('hidden');
+    $logsContentResults.replaceChildren();
+    $logsList.classList.remove('hidden');
+    return;
+  }
+  $logsList.classList.add('hidden');
+  $logsContentResults.classList.remove('hidden');
+  $logsContentResults.replaceChildren();
+  const loading = document.createElement('p');
+  loading.className = 'logs-empty';
+  loading.textContent = 'Searching…';
+  $logsContentResults.appendChild(loading);
+
+  try {
+    const res = await authFetch(`/api/logs/search?q=${encodeURIComponent(q)}&limit=100`);
+    if (!res.ok) {
+      $logsContentResults.replaceChildren();
+      const err = document.createElement('p');
+      err.className = 'logs-empty';
+      err.textContent = `Search failed (HTTP ${res.status}).`;
+      $logsContentResults.appendChild(err);
+      return;
+    }
+    const data = await res.json();
+    renderLogsContentResults(q, data.matches || [], data.truncated);
+  } catch (err) {
+    console.error('logs search failed', err);
+    $logsContentResults.replaceChildren();
+    const e = document.createElement('p');
+    e.className = 'logs-empty';
+    e.textContent = `Search failed: ${err.message}`;
+    $logsContentResults.appendChild(e);
+  }
+}
+
+function renderLogsContentResults(query, matches, truncated) {
+  $logsContentResults.replaceChildren();
+  if (!matches.length) {
+    const empty = document.createElement('p');
+    empty.className = 'logs-empty';
+    empty.textContent = `No matches for "${query}".`;
+    $logsContentResults.appendChild(empty);
+    return;
+  }
+
+  const header = document.createElement('p');
+  header.className = 'logs-empty';
+  header.textContent = `${matches.length} match${matches.length === 1 ? '' : 'es'}${truncated ? ' (truncated — narrow the query for more)' : ''}.`;
+  $logsContentResults.appendChild(header);
+
+  const lcQuery = query.toLowerCase();
+  for (const m of matches) {
+    const log = cachedLogs.find((l) => l.id === m.logId);
+    const row = document.createElement('div');
+    row.className = 'log-content-hit';
+
+    const head = document.createElement('div');
+    head.className = 'log-content-hit-head';
+    const name = document.createElement('span');
+    name.className = 'log-content-hit-name';
+    name.textContent = m.sessionName || shortPath(m.cwd) || m.logId.slice(0, 8);
+    head.appendChild(name);
+    const meta = document.createElement('span');
+    meta.className = 'log-content-hit-meta';
+    const bits = [];
+    if (m.entryType) bits.push(m.entryType);
+    if (m.ts) bits.push(new Date(m.ts).toLocaleString());
+    meta.textContent = bits.join(' · ');
+    head.appendChild(meta);
+    row.appendChild(head);
+
+    const snippet = document.createElement('div');
+    snippet.className = 'log-content-hit-snippet';
+    // Split on query (case-insensitive) and rebuild with <mark> around hits
+    // — avoids innerHTML entirely so user content can't break out.
+    const text = m.snippet;
+    const lc = text.toLowerCase();
+    let pos = 0;
+    while (pos < text.length) {
+      const next = lc.indexOf(lcQuery, pos);
+      if (next < 0) {
+        snippet.appendChild(document.createTextNode(text.slice(pos)));
+        break;
+      }
+      if (next > pos) {
+        snippet.appendChild(document.createTextNode(text.slice(pos, next)));
+      }
+      const mark = document.createElement('mark');
+      mark.className = 'find-hit';
+      mark.textContent = text.slice(next, next + query.length);
+      snippet.appendChild(mark);
+      pos = next + query.length;
+    }
+    row.appendChild(snippet);
+
+    if (log) {
+      row.style.cursor = 'pointer';
+      row.title = 'Click to open this log';
+      row.addEventListener('click', () => {
+        // Reuse the existing log viewer by simulating a click-to-open: find
+        // the viewer and load via the same path the main list uses.
+        viewLog(log);
+      });
+    }
+
+    $logsContentResults.appendChild(row);
+  }
+}
+
 // Cached logs list for client-side filtering without refetching.
 let cachedLogs = [];
 
@@ -1520,26 +1643,118 @@ function appendUserMessage(session, text, attachments) {
   session.lastUserTurn = { text, attachments: attachments || null };
   if (session.id === state.activeId) {
     const el = document.createElement('div');
-    el.className = 'msg msg-user';
-    if (attachments?.length) {
-      const thumbs = document.createElement('div');
-      thumbs.className = 'msg-attachments';
-      for (const att of attachments) {
-        if (att.type === 'image') {
-          const img = document.createElement('img');
-          img.src = `data:${att.source.media_type};base64,${att.source.data}`;
-          img.className = 'msg-attachment-img';
-          thumbs.appendChild(img);
-        }
-      }
-      if (thumbs.childElementCount) el.appendChild(thumbs);
-    }
-    const textNode = document.createElement('div');
-    textNode.textContent = text;
-    el.appendChild(textNode);
+    populateUserMessageEl(el, session, text, attachments);
     $messages.appendChild(el);
     scrollToBottom();
   }
+}
+
+/**
+ * Render the internals of a `msg msg-user` element — the attachment thumbs,
+ * the text body, and the hover-only Edit button. Used by both the live
+ * append path and the renderChat replay path so they stay visually identical
+ * and both get the edit affordance. Replaces whatever children were there
+ * previously (used on initial render and on Cancel-of-edit).
+ */
+function populateUserMessageEl(el, session, text, attachments) {
+  el.replaceChildren();
+  el.className = 'msg msg-user';
+  if (attachments?.length) {
+    const thumbs = document.createElement('div');
+    thumbs.className = 'msg-attachments';
+    for (const att of attachments) {
+      if (att.type === 'image') {
+        const img = document.createElement('img');
+        img.src = `data:${att.source.media_type};base64,${att.source.data}`;
+        img.className = 'msg-attachment-img';
+        thumbs.appendChild(img);
+      }
+    }
+    if (thumbs.childElementCount) el.appendChild(thumbs);
+  }
+  const textNode = document.createElement('div');
+  textNode.className = 'msg-user-text';
+  textNode.textContent = text;
+  el.appendChild(textNode);
+
+  const edit = document.createElement('button');
+  edit.type = 'button';
+  edit.className = 'msg-user-edit-btn';
+  edit.title = 'Edit & resend as a new turn';
+  edit.setAttribute('aria-label', 'Edit and resend message');
+  edit.textContent = 'Edit';
+  edit.addEventListener('click', (e) => {
+    e.stopPropagation();
+    startEditUserMessage(el, session, text, attachments);
+  });
+  el.appendChild(edit);
+}
+
+/**
+ * Swap a user message into an inline editor. On save we send the edited text
+ * as a brand-new turn — Claude's context-since-then isn't rewound, so this is
+ * an "oh, I meant to say..." affordance, not a real branch. Fork-at-point
+ * would need transcript surgery on Claude CLI's private state, which we
+ * aren't willing to do.
+ */
+function startEditUserMessage(el, session, originalText, originalAttachments) {
+  if (el.classList.contains('editing')) return;
+  if (session.status === 'busy') {
+    showToast('Wait for the current turn to finish before editing');
+    return;
+  }
+  el.classList.add('editing');
+  el.replaceChildren();
+
+  const ta = document.createElement('textarea');
+  ta.className = 'msg-user-edit-area';
+  ta.value = originalText;
+  ta.rows = Math.min(12, Math.max(2, originalText.split('\n').length + 1));
+  el.appendChild(ta);
+
+  const actions = document.createElement('div');
+  actions.className = 'msg-user-edit-actions';
+  const saveBtn = document.createElement('button');
+  saveBtn.type = 'button';
+  saveBtn.textContent = 'Send as new turn';
+  saveBtn.className = 'primary-btn';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.textContent = 'Cancel';
+  actions.append(saveBtn, cancelBtn);
+  el.appendChild(actions);
+
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+
+  const restore = () => {
+    el.classList.remove('editing');
+    populateUserMessageEl(el, session, originalText, originalAttachments);
+  };
+
+  cancelBtn.addEventListener('click', restore);
+
+  saveBtn.addEventListener('click', () => {
+    const text = ta.value.trim();
+    if (!text) { restore(); return; }
+    if (session.status === 'busy') {
+      showToast('Wait for the current turn to finish before editing');
+      return;
+    }
+    restore();
+    appendUserMessage(session, text, null);
+    send({ type: 'message', sessionId: session.id, text, attachments: null });
+    session.status = 'busy';
+    session.turnStartedAt = Date.now();
+    updateStatusUI();
+    renderSidebar();
+    startStatusTicker();
+  });
+
+  ta.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); restore(); }
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveBtn.click(); }
+  });
 }
 
 function appendError(session, text) {
@@ -1722,9 +1937,8 @@ function renderChat() {
     switch (msg.role) {
       case 'user': {
         const el = document.createElement('div');
-        el.className = 'msg msg-user';
+        populateUserMessageEl(el, session, msg.text, msg.attachments);
         if (isSubagent) el.classList.add('from-subagent');
-        el.textContent = msg.text;
         container.appendChild(el);
         break;
       }
@@ -2313,6 +2527,9 @@ function hideSlashSuggest() {
   slashMatches = [];
   slashSelected = 0;
   $slashSuggest.classList.add('hidden');
+  // Clear the prompt-library's mode marker too — both menus share the DOM
+  // so leaving a stale class around would misstyle a later slash menu.
+  $slashSuggest.classList.remove('prompt-suggest-mode');
 }
 
 function applySlashMatch(index) {
@@ -2667,8 +2884,257 @@ async function boot() {
   } else {
     hideAuthScreen();
     startWebSocket();
+    // Warm the prompt library so the ;label trigger works on first try.
+    loadPrompts().catch(() => {});
   }
 }
+
+// ---------------------------------------------------------------------------
+// Prompt library — server-persisted reusable prompts. Trigger in the composer
+// via `;label` (at the start of the input, on a single line). The dialog has
+// full CRUD; the composer pops a suggestion menu as the user types.
+// ---------------------------------------------------------------------------
+
+const $promptsDialog = document.getElementById('prompts-dialog');
+const $promptsList   = document.getElementById('prompts-list');
+const $promptsCount  = document.getElementById('prompts-count');
+const $promptsFilter = document.getElementById('prompts-filter');
+const $promptsEdit   = document.getElementById('prompts-edit');
+const $promptLabel   = document.getElementById('prompt-label');
+const $promptBody    = document.getElementById('prompt-body');
+const $promptSave    = document.getElementById('prompt-save');
+const $promptCancel  = document.getElementById('prompt-cancel');
+const $promptDelete  = document.getElementById('prompt-delete');
+const $promptsClose  = document.getElementById('prompts-close');
+const $promptsNew    = document.getElementById('btn-prompt-new');
+const $btnPrompts    = document.getElementById('btn-prompts');
+
+/** Current in-memory prompt list. Mirrors the server copy; re-read on open. */
+let prompts = [];
+/** Id of the prompt currently open in the edit pane, or null for a new one. */
+let editingPromptId = null;
+
+async function loadPrompts() {
+  try {
+    const res = await authFetch('/api/prompts');
+    if (!res.ok) return;
+    const data = await res.json();
+    prompts = Array.isArray(data.prompts) ? data.prompts : [];
+  } catch (err) {
+    console.error('Failed to load prompts', err);
+    prompts = [];
+  }
+}
+
+async function savePrompts() {
+  try {
+    const res = await authFetch('/api/prompts', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompts }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    // Server may have filtered out invalid entries — adopt its canonical view.
+    prompts = Array.isArray(data.prompts) ? data.prompts : prompts;
+  } catch (err) {
+    console.error('Failed to save prompts', err);
+    showToast('Failed to save prompts — see console');
+  }
+}
+
+function renderPromptsList() {
+  const q = ($promptsFilter.value || '').trim().toLowerCase();
+  const filtered = q
+    ? prompts.filter((p) => p.label.toLowerCase().includes(q) || p.body.toLowerCase().includes(q))
+    : prompts;
+
+  $promptsCount.textContent = `${prompts.length} saved`;
+  $promptsList.replaceChildren();
+
+  if (filtered.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'logs-empty';
+    empty.textContent = prompts.length === 0
+      ? 'No prompts yet. Click "New prompt" to add one.'
+      : `No prompts match "${q}".`;
+    $promptsList.appendChild(empty);
+    return;
+  }
+
+  for (const p of filtered) {
+    const row = document.createElement('div');
+    row.className = 'log-row';
+    row.style.cursor = 'pointer';
+
+    const info = document.createElement('div');
+    info.className = 'log-info';
+    const name = document.createElement('div');
+    name.className = 'log-name';
+    name.textContent = p.label;
+    info.appendChild(name);
+    const meta = document.createElement('div');
+    meta.className = 'log-meta';
+    meta.textContent = p.body.slice(0, 140).replace(/\s+/g, ' ');
+    info.appendChild(meta);
+    row.appendChild(info);
+
+    row.addEventListener('click', () => openPromptEditor(p.id));
+    $promptsList.appendChild(row);
+  }
+}
+
+function openPromptEditor(id) {
+  editingPromptId = id;
+  const existing = id ? prompts.find((p) => p.id === id) : null;
+  $promptLabel.value = existing?.label || '';
+  $promptBody.value = existing?.body || '';
+  $promptDelete.classList.toggle('hidden', !existing);
+  $promptsEdit.classList.remove('hidden');
+  $promptLabel.focus();
+}
+
+function closePromptEditor() {
+  editingPromptId = null;
+  $promptsEdit.classList.add('hidden');
+  $promptLabel.value = '';
+  $promptBody.value = '';
+}
+
+$btnPrompts.addEventListener('click', async () => {
+  await loadPrompts();
+  closePromptEditor();
+  $promptsFilter.value = '';
+  renderPromptsList();
+  $promptsDialog.showModal();
+});
+
+$promptsClose.addEventListener('click', () => $promptsDialog.close());
+
+$promptsFilter.addEventListener('input', renderPromptsList);
+
+$promptsNew.addEventListener('click', () => openPromptEditor(null));
+
+$promptCancel.addEventListener('click', closePromptEditor);
+
+$promptSave.addEventListener('click', async () => {
+  const label = $promptLabel.value.trim();
+  const body = $promptBody.value;
+  if (!label) { $promptLabel.focus(); return; }
+  if (!body.trim()) { $promptBody.focus(); return; }
+
+  if (editingPromptId) {
+    const idx = prompts.findIndex((p) => p.id === editingPromptId);
+    if (idx >= 0) prompts[idx] = { ...prompts[idx], label, body };
+  } else {
+    prompts.push({ id: crypto.randomUUID(), label, body });
+  }
+  await savePrompts();
+  closePromptEditor();
+  renderPromptsList();
+});
+
+$promptDelete.addEventListener('click', async () => {
+  if (!editingPromptId) return;
+  const existing = prompts.find((p) => p.id === editingPromptId);
+  const ok = await confirm(`Delete prompt "${existing?.label || 'this prompt'}"?`);
+  if (!ok) return;
+  prompts = prompts.filter((p) => p.id !== editingPromptId);
+  await savePrompts();
+  closePromptEditor();
+  renderPromptsList();
+});
+
+// Composer integration: show a suggestion list when the user types `;` at
+// the start of the input. Tab/Enter expands the selected prompt's body into
+// the composer, replacing the `;label` trigger. Reuses the slash-suggest
+// DOM so the two menus don't stack.
+let promptSuggestMatches = [];
+let promptSuggestSelected = 0;
+
+function updatePromptSuggest() {
+  const raw = $promptInput.value;
+  // Fire only for single-line inputs starting with ;
+  if (!raw.startsWith(';') || raw.includes('\n')) { hidePromptSuggest(); return; }
+  // Also hide if slash suggest (Claude's own commands) is already up — /
+  // commands take priority when they happen to share the composer.
+  if (raw.startsWith('/')) { hidePromptSuggest(); return; }
+  if (!prompts.length) return; // Nothing loaded yet; loadPrompts runs at boot.
+
+  const query = raw.slice(1).toLowerCase();
+  promptSuggestMatches = prompts
+    .filter((p) => p.label.toLowerCase().includes(query))
+    .slice(0, 10);
+
+  if (promptSuggestMatches.length === 0) { hidePromptSuggest(); return; }
+  promptSuggestSelected = Math.min(promptSuggestSelected, promptSuggestMatches.length - 1);
+  renderPromptSuggest();
+}
+
+function renderPromptSuggest() {
+  $slashSuggest.replaceChildren();
+  $slashSuggest.classList.add('prompt-suggest-mode');
+  promptSuggestMatches.forEach((p, i) => {
+    const li = document.createElement('li');
+    if (i === promptSuggestSelected) li.classList.add('active');
+    const label = document.createElement('span');
+    label.textContent = ';' + p.label;
+    label.style.fontWeight = '600';
+    li.appendChild(label);
+    const body = document.createElement('span');
+    body.textContent = ' ' + p.body.slice(0, 60).replace(/\s+/g, ' ');
+    body.style.color = 'var(--text-dim)';
+    body.style.marginLeft = '8px';
+    body.style.fontSize = '11px';
+    li.appendChild(body);
+    li.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      applyPromptMatch(i);
+    });
+    $slashSuggest.appendChild(li);
+  });
+  $slashSuggest.classList.remove('hidden');
+}
+
+function hidePromptSuggest() {
+  if ($slashSuggest.classList.contains('prompt-suggest-mode')) {
+    promptSuggestMatches = [];
+    promptSuggestSelected = 0;
+    $slashSuggest.classList.add('hidden');
+    $slashSuggest.classList.remove('prompt-suggest-mode');
+  }
+}
+
+function applyPromptMatch(index) {
+  const p = promptSuggestMatches[index];
+  if (!p) return;
+  $promptInput.value = p.body;
+  hidePromptSuggest();
+  $promptInput.focus();
+  // Move cursor to end so the user can keep typing if they want to amend.
+  $promptInput.setSelectionRange(p.body.length, p.body.length);
+}
+
+$promptInput.addEventListener('input', updatePromptSuggest);
+
+$promptInput.addEventListener('keydown', (e) => {
+  if (!promptSuggestMatches.length) return;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    promptSuggestSelected = (promptSuggestSelected + 1) % promptSuggestMatches.length;
+    renderPromptSuggest();
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    promptSuggestSelected = (promptSuggestSelected - 1 + promptSuggestMatches.length) % promptSuggestMatches.length;
+    renderPromptSuggest();
+  } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.ctrlKey && !e.metaKey)) {
+    e.preventDefault();
+    applyPromptMatch(promptSuggestSelected);
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    hidePromptSuggest();
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Command palette — Ctrl+K quick switcher over live sessions + resumable logs
@@ -2801,11 +3267,176 @@ $paletteInput.addEventListener('keydown', (e) => {
 // ---------------------------------------------------------------------------
 //
 // - Ctrl/Cmd+N        new session dialog
+// - Ctrl/Cmd+Shift+F  find-in-transcript (scoped to the active chat)
 // - Ctrl/Cmd+/        show shortcut hint toast
 // - Escape            close the top open <dialog>, or focus the composer
 //
 // We do NOT hijack shortcuts when the user is typing into the composer or
 // into a dialog input, unless it's a modifier combo we explicitly own.
+
+// ---------------------------------------------------------------------------
+// Find-in-transcript — Ctrl+Shift+F opens a bar over the active chat, walks
+// the rendered DOM, highlights matches with <mark>, and navigates through
+// them. Plain Ctrl+F is left alone so the native browser find still works.
+// ---------------------------------------------------------------------------
+
+const $findBar   = document.getElementById('find-bar');
+const $findInput = document.getElementById('find-input');
+const $findCount = document.getElementById('find-count');
+const $findPrev  = document.getElementById('find-prev');
+const $findNext  = document.getElementById('find-next');
+const $findClose = document.getElementById('find-close');
+
+let findMatches = [];       // Array of <mark> elements, in DOM order.
+let findIndex   = -1;       // Currently focused match, or -1 if none.
+let findDebounce = null;
+
+function openFind() {
+  if (!state.activeId) return;
+  $findBar.classList.remove('hidden');
+  $findInput.focus();
+  $findInput.select();
+  if ($findInput.value) runFind();
+}
+
+function closeFind() {
+  clearFindHighlights();
+  $findBar.classList.add('hidden');
+  $findInput.value = '';
+  findMatches = [];
+  findIndex = -1;
+  updateFindCount();
+  $promptInput.focus();
+}
+
+function clearFindHighlights() {
+  for (const mark of $messages.querySelectorAll('mark.find-hit')) {
+    const parent = mark.parentNode;
+    if (!parent) continue;
+    // Replace the <mark> with its text content so the DOM is back to what
+    // the chat renderers built originally.
+    parent.replaceChild(document.createTextNode(mark.textContent), mark);
+    parent.normalize();
+  }
+}
+
+/**
+ * Walk every text node inside #messages and wrap occurrences of `query`
+ * with <mark class="find-hit">. Expands any <details> ancestor of a match
+ * so collapsed tool/thinking cards don't hide hits.
+ */
+function runFind() {
+  clearFindHighlights();
+  findMatches = [];
+  findIndex = -1;
+
+  const query = $findInput.value;
+  if (!query || query.length < 1) {
+    updateFindCount();
+    return;
+  }
+
+  const lcQuery = query.toLowerCase();
+  // TreeWalker skips <mark class="find-hit"> nodes via the rejectFilter —
+  // we'll re-walk after each mutation, but filtering out already-marked
+  // content protects against pathological double-highlighting if this
+  // runs concurrently.
+  const walker = document.createTreeWalker(
+    $messages,
+    NodeFilter.SHOW_TEXT,
+    {
+      acceptNode: (node) => {
+        if (!node.nodeValue || !node.parentNode) return NodeFilter.FILTER_REJECT;
+        // Skip inside the find bar itself in case it's ever nested here.
+        if (node.parentNode.closest?.('#find-bar')) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    },
+  );
+
+  const targets = [];
+  let node;
+  while ((node = walker.nextNode())) targets.push(node);
+
+  for (const textNode of targets) {
+    const value = textNode.nodeValue;
+    const lc = value.toLowerCase();
+    let searchFrom = 0;
+    let hit = lc.indexOf(lcQuery, searchFrom);
+    if (hit < 0) continue;
+
+    const frag = document.createDocumentFragment();
+    let lastEnd = 0;
+    while (hit >= 0) {
+      if (hit > lastEnd) {
+        frag.appendChild(document.createTextNode(value.slice(lastEnd, hit)));
+      }
+      const mark = document.createElement('mark');
+      mark.className = 'find-hit';
+      mark.textContent = value.slice(hit, hit + query.length);
+      frag.appendChild(mark);
+      findMatches.push(mark);
+      lastEnd = hit + query.length;
+      hit = lc.indexOf(lcQuery, lastEnd);
+    }
+    if (lastEnd < value.length) {
+      frag.appendChild(document.createTextNode(value.slice(lastEnd)));
+    }
+    textNode.parentNode.replaceChild(frag, textNode);
+  }
+
+  // Open any <details> that contains a match so the user can see them.
+  for (const mark of findMatches) {
+    let parent = mark.parentNode;
+    while (parent && parent !== $messages) {
+      if (parent.tagName === 'DETAILS' && !parent.open) parent.open = true;
+      parent = parent.parentNode;
+    }
+  }
+
+  if (findMatches.length > 0) {
+    stepFind(1);
+  } else {
+    updateFindCount();
+  }
+}
+
+function stepFind(direction) {
+  if (!findMatches.length) { updateFindCount(); return; }
+  findIndex = (findIndex + direction + findMatches.length) % findMatches.length;
+  for (const m of findMatches) m.classList.remove('active');
+  const active = findMatches[findIndex];
+  active.classList.add('active');
+  active.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  updateFindCount();
+}
+
+function updateFindCount() {
+  if (!findMatches.length) {
+    $findCount.textContent = $findInput.value ? '0 / 0' : '';
+  } else {
+    $findCount.textContent = `${findIndex + 1} / ${findMatches.length}`;
+  }
+}
+
+$findInput.addEventListener('input', () => {
+  clearTimeout(findDebounce);
+  findDebounce = setTimeout(runFind, 120);
+});
+
+$findInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    stepFind(e.shiftKey ? -1 : 1);
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    closeFind();
+  }
+});
+
+$findPrev.addEventListener('click', () => stepFind(-1));
+$findNext.addEventListener('click', () => stepFind(1));
+$findClose.addEventListener('click', closeFind);
 
 document.addEventListener('keydown', (e) => {
   const mod = e.ctrlKey || e.metaKey;
@@ -2813,6 +3444,12 @@ document.addEventListener('keydown', (e) => {
   const typingInField =
     target instanceof HTMLElement &&
     (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+
+  if (mod && e.shiftKey && (e.key === 'f' || e.key === 'F')) {
+    e.preventDefault();
+    openFind();
+    return;
+  }
 
   if (mod && (e.key === 'n' || e.key === 'N')) {
     e.preventDefault();
@@ -2828,7 +3465,7 @@ document.addEventListener('keydown', (e) => {
 
   if (mod && e.key === '/') {
     e.preventDefault();
-    showToast('Shortcuts: Ctrl+K switch · Ctrl+N new · Ctrl+Enter send · Esc focus composer');
+    showToast('Shortcuts: Ctrl+K switch · Ctrl+N new · Ctrl+Shift+F find · Ctrl+Enter send · Esc focus composer');
     return;
   }
 

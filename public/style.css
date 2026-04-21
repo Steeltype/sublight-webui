@@ -540,6 +540,56 @@ dialog::backdrop {
   flex-shrink: 0;
 }
 
+/* ─── Cross-log content search results ────────────────────────── */
+
+#logs-content-results {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 55vh;
+  overflow-y: auto;
+}
+
+.log-content-hit {
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  background: var(--bg-chat);
+  border: 1px solid var(--border);
+  transition: border-color 0.1s;
+}
+
+.log-content-hit:hover {
+  border-color: var(--accent);
+}
+
+.log-content-hit-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.log-content-hit-name {
+  color: var(--text-bright);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.log-content-hit-meta {
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.log-content-hit-snippet {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* Claude Code import picker — each row is a selectable card, not a flat
    list entry. Slightly heavier border + stacked info so the cwd, date, and
    first-message snippet all read clearly and the "Resume" action reads as
@@ -1414,6 +1464,68 @@ dialog::backdrop {
   color: var(--text);
 }
 
+/* ─── Find-in-transcript bar (Ctrl+Shift+F) ───────────────────── */
+
+#find-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-chat);
+}
+
+#find-input {
+  flex: 1;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 5px 10px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+#find-input:focus { border-color: var(--accent); }
+
+#find-count {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  min-width: 48px;
+  text-align: right;
+}
+
+#find-bar button {
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 3px 9px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+#find-bar button:hover {
+  border-color: var(--accent);
+  background: var(--bg-hover);
+}
+
+mark.find-hit {
+  background: rgba(255, 210, 80, 0.35);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+mark.find-hit.active {
+  background: rgba(255, 210, 80, 0.9);
+  color: #1a1a1a;
+  outline: 1px solid rgba(0, 0, 0, 0.2);
+}
+
 /* ─── Chat body (messages + optional notes panel) ─────────────── */
 
 #chat-body {
@@ -1446,6 +1558,92 @@ dialog::backdrop {
   background: var(--accent-dim);
   color: var(--text-bright);
   white-space: pre-wrap;
+  position: relative;
+}
+
+.msg-user-text {
+  white-space: pre-wrap;
+}
+
+/* Edit button — hidden until the user hovers over (or focuses within) the
+   message, so normal reading isn't cluttered. Anchored to the corner so
+   long messages don't push it off-screen. */
+.msg-user-edit-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-family: inherit;
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: var(--radius);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.msg-user:hover .msg-user-edit-btn,
+.msg-user:focus-within .msg-user-edit-btn {
+  opacity: 1;
+}
+
+.msg-user-edit-btn:hover {
+  background: rgba(0, 0, 0, 0.4);
+  border-color: var(--accent);
+}
+
+.msg-user.editing {
+  background: var(--bg-input);
+  color: var(--text);
+}
+
+.msg-user-edit-area {
+  width: 100%;
+  min-width: 280px;
+  background: var(--bg-chat);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+}
+
+.msg-user-edit-area:focus {
+  border-color: var(--accent);
+}
+
+.msg-user-edit-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  justify-content: flex-end;
+}
+
+.msg-user-edit-actions button {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.msg-user-edit-actions button:hover {
+  border-color: var(--accent);
+}
+
+.msg-user-edit-actions .primary-btn {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
 }
 
 .msg-attachments {
@@ -1837,7 +2035,8 @@ dialog::backdrop {
   line-height: 1;
 }
 
-#btn-attach {
+#btn-attach,
+#btn-prompts {
   background: transparent;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -1851,9 +2050,72 @@ dialog::backdrop {
   font-family: inherit;
 }
 
-#btn-attach:hover {
+#btn-attach:hover,
+#btn-prompts:hover {
   background: var(--bg-hover);
   color: var(--text);
+}
+
+#btn-prompts {
+  font-size: 16px;
+}
+
+#prompts-dialog {
+  width: min(640px, 92vw);
+}
+
+#prompts-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+#prompts-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+#prompts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+#prompts-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+#prompt-label,
+#prompt-body {
+  background: var(--bg-chat);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 8px;
+  outline: none;
+}
+
+#prompt-body {
+  font-family: var(--mono, monospace);
+  resize: vertical;
+  min-height: 140px;
+}
+
+#prompt-label:focus,
+#prompt-body:focus { border-color: var(--accent); }
+
+#slash-suggest.prompt-suggest-mode li {
+  display: flex;
+  align-items: baseline;
 }
 
 #prompt-input {
