@@ -12,6 +12,11 @@
  * - The special text "CRASH": exits with code 1 to exercise the error path.
  * - The special text "TOOL": emits a tool_use block for "Read" then a
  *   tool_result for it, then the assistant summary.
+ * - The special text "SLOW": emits an assistant intro line but no result,
+ *   so the turn stays open until aborted.
+ * - A control_request with subtype "interrupt": emits a control_response
+ *   and then a result event for the (otherwise open) turn, mirroring how
+ *   the real Claude CLI responds to the SDK's interrupt() call.
  *
  * Intentionally minimal — just enough for the Sublight pipeline to process.
  */
@@ -127,6 +132,8 @@ emitInit();
 
 const rl = readline.createInterface({ input: process.stdin });
 
+let openTurnActive = false;
+
 rl.on('line', (line) => {
   const trimmed = line.trim();
   if (!trimmed) return;
@@ -135,6 +142,21 @@ rl.on('line', (line) => {
   try {
     msg = JSON.parse(trimmed);
   } catch {
+    return;
+  }
+
+  // An interrupt control_request from Sublight — ack with control_response
+  // and close out the current turn with a result event. Matches the real
+  // CLI's behavior when the SDK calls client.interrupt().
+  if (msg.type === 'control_request' && msg.request?.subtype === 'interrupt') {
+    emit({
+      type: 'control_response',
+      response: { subtype: 'success', request_id: msg.request_id },
+    });
+    if (openTurnActive) {
+      openTurnActive = false;
+      emitResult('(interrupted)');
+    }
     return;
   }
 
@@ -157,6 +179,14 @@ rl.on('line', (line) => {
 
   if (userText === 'CRASH') {
     process.exit(1);
+  }
+
+  if (userText === 'SLOW') {
+    // Open turn — emit an assistant chunk but do not emit result. The
+    // turn stays busy until an interrupt arrives (or the test times out).
+    openTurnActive = true;
+    emitAssistantText('working on it...');
+    return;
   }
 
   if (userText === 'TOOL') {

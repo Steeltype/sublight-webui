@@ -348,6 +348,42 @@ test('session recovers after Claude process crashes mid-turn', async () => {
   ws.close();
 });
 
+test('Stop aborts the current turn in-band and preserves session context', async () => {
+  const { ws, waitFor, opened } = openWs();
+  await opened;
+
+  send(ws, { type: 'new_session', cwd: REPO_ROOT, permissionMode: 'bypass' });
+  const created = await waitFor((m) => m.type === 'session_created');
+  const sessionId = created.sessionId;
+
+  // SLOW makes the fake-claude stub emit an assistant chunk but no result,
+  // so the turn stays open until we interrupt it.
+  send(ws, { type: 'message', sessionId, text: 'SLOW' });
+  await waitFor((m) => m.type === 'stream_start');
+  await waitFor((m) => m.type === 'claude_event' && m.event?.type === 'assistant');
+
+  send(ws, { type: 'abort', sessionId });
+  const end = await waitFor((m) => m.type === 'stream_end' && m.sessionId === sessionId);
+  // Graceful, in-band abort — no SIGTERM exit code, no stderr error
+  // surfaced to the UI. Regression guard for "Claude process exited with
+  // code 143" when the user clicked Stop.
+  assert.equal(end.stderr, undefined);
+  assert.equal(end.exitCode, undefined);
+
+  // The whole point of the fix: the next message lands on the SAME process
+  // (the fake-claude stub only has one persistent session id). Context is
+  // preserved across Stop clicks.
+  send(ws, { type: 'message', sessionId, text: 'after stop' });
+  await waitFor((m) => m.type === 'stream_start');
+  const result = await waitFor(
+    (m) => m.type === 'claude_event' && m.event?.type === 'result',
+  );
+  assert.ok(result.event.result.includes('ECHO: after stop'));
+  await waitFor((m) => m.type === 'stream_end');
+
+  ws.close();
+});
+
 test('/local-file rejects a symlink that escapes session scope', async () => {
   // Stand up a session rooted in a temp dir, then plant a .png symlink
   // inside that dir pointing to a file outside of it. The pre-fix code
