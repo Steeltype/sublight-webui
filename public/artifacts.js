@@ -272,6 +272,37 @@ function setItemChecked(sessionId, todoId, itemId, checked) {
   localStorage.setItem(todoKey(sessionId, todoId, itemId), checked ? '1' : '0');
 }
 
+/** Delete every checkbox-state key for a specific session. Called when the
+ *  session's log is deleted so we don't leave orphan entries behind. */
+export function clearHumanTodoStorage(sessionId) {
+  if (!sessionId) return;
+  const prefix = `sublight-human-todo:${sessionId}:`;
+  // Collect first, then delete — removing during iteration would shift
+  // indices and we'd skip keys.
+  const victims = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith(prefix)) victims.push(key);
+  }
+  for (const key of victims) localStorage.removeItem(key);
+}
+
+/** Sweep every checkbox-state key whose sessionId is not in the provided set.
+ *  Used after the "delete all inactive logs" bulk action. */
+export function clearHumanTodoStorageExcept(keepSessionIds) {
+  const keep = keepSessionIds instanceof Set ? keepSessionIds : new Set(keepSessionIds || []);
+  const prefix = 'sublight-human-todo:';
+  const victims = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (!key || !key.startsWith(prefix)) continue;
+    // Key shape: sublight-human-todo:<sessionId>:<todoId>:<itemId>
+    const sessionId = key.slice(prefix.length).split(':', 1)[0];
+    if (!keep.has(sessionId)) victims.push(key);
+  }
+  for (const key of victims) localStorage.removeItem(key);
+}
+
 export function hasPendingHumanTodos(session) {
   if (!session?.humanTodos || session.humanTodos.size === 0) return false;
   for (const [todoId, todo] of session.humanTodos) {

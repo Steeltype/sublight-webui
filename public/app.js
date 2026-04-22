@@ -2,7 +2,7 @@
    Sublight WebUI — Frontend
    ================================================================ */
 
-import { handleOpenUrl, handlePin, handleProgress, hasPendingHumanTodos, renderArtifacts } from './artifacts.js';
+import { clearHumanTodoStorage, clearHumanTodoStorageExcept, handleOpenUrl, handlePin, handleProgress, hasPendingHumanTodos, renderArtifacts } from './artifacts.js';
 import { consumeAttachments } from './attachments.js';
 import { authFetch, isTokenRemembered, saveAuthToken } from './auth.js';
 import {
@@ -678,7 +678,10 @@ function renderLogsList() {
         const ok = await confirm('Delete this session log?');
         if (!ok) return;
         const r = await authFetch(`/api/logs/${log.id}`, { method: 'DELETE' });
-        if (r.ok) loadLogsList();
+        if (r.ok) {
+          clearHumanTodoStorage(log.id);
+          loadLogsList();
+        }
       });
       actions.appendChild(delBtn);
 
@@ -914,6 +917,10 @@ document.getElementById('logs-clear-all').addEventListener('click', async () => 
   const res = await authFetch('/api/logs', { method: 'DELETE' });
   if (res.ok) {
     const data = await res.json();
+    // Bulk delete removed logs for every inactive session. Sweep the
+    // matching localStorage entries, keeping only keys tied to a
+    // currently-live session.
+    clearHumanTodoStorageExcept(new Set(state.sessions.keys()));
     showToast(`Deleted ${data.deleted} log${data.deleted !== 1 ? 's' : ''}`);
     loadLogsList();
   }
