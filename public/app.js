@@ -2,7 +2,7 @@
    Sublight WebUI — Frontend
    ================================================================ */
 
-import { handleOpenUrl, handlePin, handleProgress, renderArtifacts } from './artifacts.js';
+import { handleOpenUrl, handlePin, handleProgress, hasPendingHumanTodos, renderArtifacts } from './artifacts.js';
 import { consumeAttachments } from './attachments.js';
 import { authFetch, isTokenRemembered, saveAuthToken } from './auth.js';
 import {
@@ -806,6 +806,19 @@ async function rehydrateSessionFromLog(sessionId) {
 
     if (entry.type === 'artifact' && entry.artifact) {
       const a = entry.artifact;
+      // human_todo lives in session.humanTodos (a map keyed by todo id), not
+      // the flat artifacts list — replaying the log naturally lands on the
+      // latest version because a later entry overwrites an earlier one.
+      if (a.type === 'human_todo' && a.id) {
+        if (!session.humanTodos) session.humanTodos = new Map();
+        session.humanTodos.set(a.id, {
+          id: a.id,
+          title: a.title || null,
+          items: Array.isArray(a.items) ? a.items : [],
+          receivedAt: Date.now(),
+        });
+        continue;
+      }
       // Skip transient/control artifacts that don't belong in the history panel.
       const transient = ['notification', 'open_url', 'progress', 'set_session_name', 'pin'];
       if (transient.includes(a.type)) {
@@ -1088,6 +1101,10 @@ function handleServerMessage(msg) {
         // container instead of the top-level #messages. Supports arbitrary
         // nesting depth (a Task subagent can spawn another Task).
         toolContainers: new Map(),
+        // Map<todoId, {id, title, items:[{id,text,done}], receivedAt}> —
+        // checklists Claude pushed via human_todo. Item check state lives in
+        // localStorage (see artifacts.js); this map just holds the metadata.
+        humanTodos: new Map(),
         ...createUsageStats(),
         queue: [],
         // Status-strip tracking: turnStartedAt is when stream_start arrived,
@@ -1120,6 +1137,7 @@ function handleServerMessage(msg) {
         streamingText: '',
         pendingToolCards: new Map(),
         toolContainers: new Map(),
+        humanTodos: new Map(),
         ...createUsageStats(),
         queue: [],
         turnStartedAt: 0,
@@ -1161,6 +1179,7 @@ function handleServerMessage(msg) {
           streamingText: '',
           pendingToolCards: new Map(),
           toolContainers: new Map(),
+          humanTodos: new Map(),
           ...createUsageStats(),
           queue: [],
           turnStartedAt: 0,
@@ -1337,6 +1356,27 @@ function handleServerMessage(msg) {
         if (session) {
           session.name = artifact.name;
           if (sessionId === state.activeId) $chatTitle.textContent = artifact.name;
+          renderSidebar();
+        }
+        break;
+      }
+
+      // Upsert a human-todo checklist. Survives across updates by id.
+      if (artifact.type === 'human_todo' && artifact.id) {
+        const session = state.sessions.get(sessionId);
+        if (session) {
+          if (!session.humanTodos) session.humanTodos = new Map();
+          session.humanTodos.set(artifact.id, {
+            id: artifact.id,
+            title: artifact.title || null,
+            items: Array.isArray(artifact.items) ? artifact.items : [],
+            receivedAt: Date.now(),
+          });
+          if (!state.artifactsVisible) {
+            state.artifactsVisible = true;
+            $artifactsPanel.classList.remove('hidden');
+          }
+          if (sessionId === state.activeId) renderArtifacts();
           renderSidebar();
         }
         break;
@@ -2346,6 +2386,15 @@ function renderSidebar() {
       dot.setAttribute('aria-label', 'Unread output');
       nameSpan.appendChild(dot);
     }
+    // Pending indicator shows independently — a session can simultaneously
+    // be busy and awaiting an earlier human step, or be unread + pending.
+    if (hasPendingHumanTodos(session)) {
+      const pending = document.createElement('span');
+      pending.className = 'sidebar-pending-dot';
+      pending.title = 'Claude is waiting for you to complete a step';
+      pending.setAttribute('aria-label', 'Awaiting your action');
+      nameSpan.appendChild(pending);
+    }
 
     // Double-click to rename
     nameSpan.addEventListener('dblclick', (e) => {
@@ -2379,6 +2428,12 @@ function updateUnreadTitle() {
   const want = anyUnread ? `\u25CF ${base}` : base;
   if (document.title !== want) document.title = want;
 }
+
+// Checkbox toggles inside human-todo cards can flip a session's pending
+// status — refresh the sidebar so the indicator keeps up.
+document.addEventListener('human-todo-changed', () => {
+  renderSidebar();
+});
 
 // Fire a desktop notification when a background session finishes. "Background"
 // means the user is either looking at another session or has the tab hidden.

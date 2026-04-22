@@ -24,10 +24,12 @@ export function getProgressBars(sessionId) {
 
 export function renderArtifacts() {
   if (!state.activeId) return;
+  const session = state.sessions.get(state.activeId);
   const artifacts = state.artifacts.get(state.activeId) || [];
+  const humanTodos = session?.humanTodos || new Map();
   $artifactsList.replaceChildren();
 
-  if (artifacts.length === 0 && !getProgressBars(state.activeId).size) {
+  if (artifacts.length === 0 && !getProgressBars(state.activeId).size && humanTodos.size === 0) {
     const empty = document.createElement('p');
     empty.className = 'artifacts-empty';
     empty.textContent = 'No artifacts yet. Claude can use show_image, show_artifact, show_diff, and other tools to display content here.';
@@ -35,7 +37,14 @@ export function renderArtifacts() {
     return;
   }
 
-  // Progress bars first, then pinned artifacts, then the rest.
+  // Human todos first — the user's attention is the scarcest resource, and
+  // these are the only artifact type that asks them to do something.
+  for (const [, todo] of humanTodos) {
+    const card = renderHumanTodoCard(state.activeId, todo);
+    if (card) $artifactsList.appendChild(card);
+  }
+
+  // Progress bars, then pinned artifacts, then the rest.
   for (const [, prog] of getProgressBars(state.activeId)) {
     const bar = document.createElement('div');
     bar.className = 'artifact-progress' + (prog.done ? ' done' : '');
@@ -241,6 +250,104 @@ export function handlePin(sessionId, index) {
     artifacts[idx].pinned = true;
     if (sessionId === state.activeId) renderArtifacts();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Human todos — checklists Claude pushes for the operator to act on.
+// Item state is stored in localStorage so it survives refresh. Claude's
+// `done` flag is the initial state; the user's toggle overrides from there.
+// ---------------------------------------------------------------------------
+
+function todoKey(sessionId, todoId, itemId) {
+  return `sublight-human-todo:${sessionId}:${todoId}:${itemId}`;
+}
+
+function getItemChecked(sessionId, todoId, itemId, fromClaude) {
+  const val = localStorage.getItem(todoKey(sessionId, todoId, itemId));
+  if (val === null) return !!fromClaude;
+  return val === '1';
+}
+
+function setItemChecked(sessionId, todoId, itemId, checked) {
+  localStorage.setItem(todoKey(sessionId, todoId, itemId), checked ? '1' : '0');
+}
+
+export function hasPendingHumanTodos(session) {
+  if (!session?.humanTodos || session.humanTodos.size === 0) return false;
+  for (const [todoId, todo] of session.humanTodos) {
+    for (const item of todo.items || []) {
+      if (!getItemChecked(session.id, todoId, item.id, item.done)) return true;
+    }
+  }
+  return false;
+}
+
+function countChecked(sessionId, todo) {
+  let n = 0;
+  for (const item of todo.items || []) {
+    if (getItemChecked(sessionId, todo.id, item.id, item.done)) n++;
+  }
+  return n;
+}
+
+function renderHumanTodoCard(sessionId, todo) {
+  const card = document.createElement('div');
+  card.className = 'artifact-card human-todo-card';
+  const total = (todo.items || []).length;
+  let checked = countChecked(sessionId, todo);
+  if (total > 0 && checked === total) card.classList.add('all-done');
+
+  const header = document.createElement('div');
+  header.className = 'artifact-title human-todo-title';
+
+  const label = document.createElement('span');
+  label.textContent = todo.title || 'For you to do';
+  header.appendChild(label);
+
+  const progress = document.createElement('span');
+  progress.className = 'human-todo-progress';
+  progress.textContent = `${checked}/${total}`;
+  header.appendChild(progress);
+
+  card.appendChild(header);
+
+  const list = document.createElement('ul');
+  list.className = 'human-todo-items';
+
+  for (const item of todo.items || []) {
+    const li = document.createElement('li');
+    li.className = 'human-todo-item';
+
+    const labelEl = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    const isChecked = getItemChecked(sessionId, todo.id, item.id, item.done);
+    cb.checked = isChecked;
+    if (isChecked) li.classList.add('checked');
+
+    cb.addEventListener('change', () => {
+      setItemChecked(sessionId, todo.id, item.id, cb.checked);
+      li.classList.toggle('checked', cb.checked);
+      checked = countChecked(sessionId, todo);
+      progress.textContent = `${checked}/${total}`;
+      card.classList.toggle('all-done', total > 0 && checked === total);
+      document.dispatchEvent(new CustomEvent('human-todo-changed', {
+        detail: { sessionId },
+      }));
+    });
+
+    const text = document.createElement('span');
+    text.className = 'human-todo-text';
+    text.textContent = item.text;
+
+    labelEl.appendChild(cb);
+    labelEl.appendChild(text);
+    li.appendChild(labelEl);
+    list.appendChild(li);
+  }
+
+  card.appendChild(list);
+  return card;
 }
 
 export async function handleOpenUrl(artifact) {

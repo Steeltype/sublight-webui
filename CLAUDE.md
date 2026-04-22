@@ -19,7 +19,7 @@ Sublight is a web UI that wraps the Claude CLI via persistent stdin/stdout strea
 - **lib/routes.js** — `registerRoutes(app, { wss, shutdown })` wires every HTTP endpoint (setup, settings, audit, logs, logs/search, notes, prompts, local-file, artifact).
 - **lib/lifecycle.js** — `startIdleSweeper(wss)` (idle-session sweep + old-log rotation) and `createShutdown(httpServer)` (SIGTERM → SIGKILL escalation → hard exit).
 - **lib/logMeta.js** — Pure NDJSON log parser. Kept separate so tests can exercise it without spinning up the server.
-- **artifact-mcp.js** — MCP server injected into Claude sessions via `--mcp-config`. Provides 9 tools (show_image, show_artifact, show_markdown, show_diff, show_progress, notify, open_url, pin_artifact, set_session_name). Communicates back to the server via HTTP POST.
+- **artifact-mcp.js** — MCP server injected into Claude sessions via `--mcp-config`. Provides 10 tools (show_image, show_artifact, show_markdown, show_diff, show_progress, notify, open_url, pin_artifact, set_session_name, human_todo). Communicates back to the server via HTTP POST.
 
 ### Desktop install / launcher
 
@@ -59,6 +59,7 @@ Sublight is a web UI that wraps the Claude CLI via persistent stdin/stdout strea
 - **Rename** — double-click the sidebar entry. Sends `rename_session` over the WS, which persists a synthetic `set_session_name` artifact so `parseLogMeta` picks it up after reload.
 - **Cost / tokens** — every `result` event's `total_cost_usd` and `usage` feed `costTotal` + `tokenTotals` on the session object; rendered in the status strip and chat header with a breakdown tooltip.
 - **Edit-as-new-turn** — hover a user message to reveal an Edit button. The textarea opens inline; Save sends the edited text as a fresh turn (not a rewind — Claude's prior context is unchanged). True fork-at-point would need transcript surgery we don't do.
+- **Human todos** — Claude calls the `human_todo` MCP tool to post a checklist (run a command, check a dashboard, approve a deploy). Each checklist is keyed by id and lives in `session.humanTodos`, rendered as an amber card at the top of the artifact panel. Checkbox state persists in localStorage (`sublight-human-todo:<sessionId>:<todoId>:<itemId>`), not server-side — the log still carries the latest tool payload, so rehydration rebuilds the card but carries forward the user's checks. The sidebar renders a `sidebar-pending-dot` next to any session with at least one unchecked item; this is the "Claude is waiting on you" signal and is independent of the busy/unread dots.
 
 ## Key Design Decisions
 

@@ -173,5 +173,24 @@ server.tool(
   },
 );
 
+server.tool(
+  'human_todo',
+  'Post a checklist of actions the human operator needs to perform (run a local command, authenticate with a service, check an external dashboard, approve a deploy, etc.). The checklist appears in the artifact panel with checkboxes the user can tick off as they complete each step. The sidebar shows a distinct indicator for sessions that have unchecked items, so the human notices when you are waiting on them. Call again with the same id to update an existing checklist — replace the items array to add/remove items or mark items as already done. Use this instead of burying instructions in a prose reply whenever you need the human to take concrete steps outside the session.',
+  {
+    id: z.string().describe('Stable id for this checklist. Reuse to update an existing one.'),
+    title: z.string().optional().describe('Optional heading (defaults to "For you to do").'),
+    items: z.array(z.object({
+      id: z.string().describe('Stable id for this item so the user\'s check marks survive updates.'),
+      text: z.string().describe('What the human needs to do.'),
+      done: z.boolean().optional().describe('Pre-check the item. Use when you know it is already complete. The user can still toggle it.'),
+    })).min(1).describe('Ordered list of items.'),
+  },
+  async ({ id, title, items }) => {
+    const result = await postArtifact({ type: 'human_todo', id, title: title || null, items });
+    const pending = items.filter((i) => !i.done).length;
+    return { content: [{ type: 'text', text: result.error || `human_todo posted (${pending}/${items.length} pending)` }] };
+  },
+);
+
 const transport = new StdioServerTransport();
 await server.connect(transport);
