@@ -1,5 +1,8 @@
 # Sublight WebUI
 
+> **Archived (September 2026).** This project is retired and no longer maintained. Everything it did is now covered natively by [Claude Code](https://claude.com/product/claude-code): the desktop app (multi-session sidebar, artifacts, browser and terminal panes), the web app at claude.ai/code, and Remote Control for driving a local session from a phone or another machine. Anthropic also ships first-party permission prompts, which Sublight could never host. The code stays public and readable for reference under its existing all-rights-reserved license. Active development ran April 2026; the last real session was 2026-04-27.
+
+
 A lightweight, self-hosted web interface for [Claude Code](https://claude.com/product/claude-code). Wraps persistent CLI sessions with a multi-session chat UI, artifact panel, and custom MCP tools.
 
 **This is a personal project, not a product.** It is not affiliated with, endorsed by, or commercially connected to Anthropic. It does not use the Claude API — it spawns the unmodified `claude` CLI binary that you install and authenticate yourself. No OAuth tokens are extracted, intercepted, or proxied. No credentials are captured or stored. It's a web-based terminal wrapper, not an API client.
